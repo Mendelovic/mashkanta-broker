@@ -1,0 +1,81 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Installer logs
+debug.log
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# PEP 582; used by e.g. github.com/David-OConnor/pyflow
+__pypackages__/
+
+# Celery
+celerybeat-schedule
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.env.*
+
+# mypy
+.mypy_cache/
+.dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# FastAPI specific
+*.log
+*.db
+*.sqlite3
+*.sqlite
+
+# VS Code settings
+.vscode/
+
+# Claude Code
+*.claude
