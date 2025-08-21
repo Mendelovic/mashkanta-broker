@@ -79,3 +79,4 @@ celerybeat-schedule
 
 # Claude Code
 *.claude
+CLAUDE.md
