@@ -1,9 +1,8 @@
 from functools import lru_cache
 from .services import (
-    GPTService, 
-    DocumentProcessorService, 
-    DocumentAnalysisService, 
-    MortgageCalculatorService
+    GPTService,
+    DocumentProcessorService,
+    DocumentAnalysisService,
 )
 
 
@@ -25,9 +24,3 @@ def get_document_analysis_service() -> DocumentAnalysisService:
     gpt_service = get_gpt_service()
     document_processor = get_document_processor_service()
     return DocumentAnalysisService(gpt_service, document_processor)
-
-
-@lru_cache()
-def get_mortgage_calculator_service() -> MortgageCalculatorService:
-    """Get singleton instance of mortgage calculator service."""
-    return MortgageCalculatorService()

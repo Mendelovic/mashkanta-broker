@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 openai
+openai-agents
 python-dotenv
 pydantic-settings
 azure-ai-documentintelligence

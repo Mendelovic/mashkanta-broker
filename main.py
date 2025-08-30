@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from app.config import settings
-from app.routers import mortgage_router
+from app.routers import chat_router
 from app.utils import setup_logging
 
 # Load environment variables
@@ -17,12 +17,13 @@ async def lifespan(_app: FastAPI):
     # Startup
     setup_logging()
     import logging
+
     logger = logging.getLogger("app.main")
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
     logger.info(f"Debug mode: {settings.debug}")
-    
+
     yield
-    
+
     # Shutdown
     logger.info("Shutting down application")
 
@@ -48,7 +49,7 @@ app.add_middleware(
 
 
 # Include routers
-app.include_router(mortgage_router)
+app.include_router(chat_router)
 
 
 # Root endpoint
@@ -58,7 +59,7 @@ async def root():
     return {
         "message": f"Welcome to {settings.app_name}",
         "version": settings.app_version,
-        "status": "operational"
+        "status": "operational",
     }
 
 

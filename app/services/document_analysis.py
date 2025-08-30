@@ -1,6 +1,6 @@
 import logging
 from typing import List, Dict, Any
-from ..models import DocumentAnalysis, DocumentType
+from ..models.document import DocumentAnalysis, FinancialData
 from ..utils.text_processing import chunk_document_content
 from .gpt_service import GPTService
 from .document_processor import DocumentProcessorService
@@ -11,139 +11,142 @@ logger = logging.getLogger(__name__)
 
 class DocumentAnalysisService:
     """Service for analyzing documents and extracting financial data."""
-    
-    def __init__(self, gpt_service: GPTService, document_processor: DocumentProcessorService):
+
+    def __init__(
+        self, gpt_service: GPTService, document_processor: DocumentProcessorService
+    ):
         self.gpt_service = gpt_service
         self.document_processor = document_processor
-    
+
     async def analyze_document(self, file_path: str, filename: str) -> DocumentAnalysis:
         """
         Analyze a single document and extract financial data.
-        
+
         Args:
             file_path: Path to the document file
             filename: Original filename for reference
-            
+
         Returns:
             DocumentAnalysis object with extracted data
         """
         try:
             # Extract text and structured data from document
-            content, structured_data = await self.document_processor.process_document(file_path)
-            structured_data_dict = structured_data.model_dump()
-            
-            # Classify document type
-            doc_type, confidence = await self.gpt_service.classify_document_type(
-                content, structured_data_dict
+            content, structured_data = await self.document_processor.process_document(
+                file_path
             )
-            
-            # Extract financial data using chunking strategy for longer documents
+            structured_data_dict = structured_data.model_dump()
+
+            # Extract financial data directly - no classification needed
             chunks = chunk_document_content(content)
             if len(chunks) > 1:
-                logger.info(f"Document {filename} split into {len(chunks)} chunks for processing")
-                analysis_data = await self._process_document_chunks(
-                    doc_type, chunks, structured_data_dict
+                logger.info(
+                    f"Document {filename} split into {len(chunks)} chunks for processing"
+                )
+                financial_data = await self._process_document_chunks(
+                    chunks, structured_data_dict
                 )
             else:
-                analysis_data = await self.gpt_service.extract_financial_data(
-                    doc_type, content, structured_data_dict
+                financial_data = await self.gpt_service.extract_financial_data(
+                    content, structured_data_dict
                 )
-            
+
             return DocumentAnalysis(
                 filename=filename,
-                document_type=doc_type,
-                analysis=analysis_data,
-                confidence=confidence,
+                financial_data=financial_data,
+                confidence=financial_data.confidence,
                 chunks_processed=len(chunks) if len(chunks) > 1 else None,
-                total_length=len(content) if len(chunks) > 1 else None
+                total_length=len(content) if len(chunks) > 1 else None,
             )
-            
+
         except Exception as e:
             logger.error(f"Document analysis failed for {filename}: {e}")
             return DocumentAnalysis(
                 filename=filename,
-                document_type=DocumentType.UNKNOWN,
-                analysis={"error": str(e)},
+                financial_data=FinancialData(confidence=0.0),
                 confidence=0.0,
-                error=str(e)
+                error=str(e),
             )
-    
+
     async def _process_document_chunks(
-        self, 
-        document_type: DocumentType, 
-        chunks: List[str], 
-        structured_data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self,
+        chunks: List[str],
+        structured_data: Dict[str, Any],
+    ) -> FinancialData:
         """Process multiple document chunks and merge results intelligently."""
         all_results = []
-        
+
         for i, chunk in enumerate(chunks):
             chunk_result = await self.gpt_service.extract_financial_data(
-                document_type, chunk, structured_data
+                chunk, structured_data
             )
-            chunk_result["chunk_index"] = i
             all_results.append(chunk_result)
-        
+
         # Merge results from all chunks intelligently
-        merged_result = self._merge_chunk_results(document_type, all_results, chunks)
-        
+        merged_result = self._merge_chunk_results(all_results, chunks)
+
         return merged_result
-    
+
     def _merge_chunk_results(
-        self, 
-        document_type: DocumentType, 
-        all_results: List[Dict[str, Any]], 
-        chunks: List[str]
-    ) -> Dict[str, Any]:
-        """Merge results from multiple chunks based on document type."""
-        merged_result: Dict[str, Any] = {"confidence": 0.0}
-        
-        if document_type == DocumentType.PAYSLIP:
-            # For payslips, find the single best chunk based on overall confidence
-            if all_results:
-                best_result_chunk = max(all_results, key=lambda x: x.get("confidence", 0))
-                # Use all data from that best chunk
-                merged_result = {
-                    "gross_salary": best_result_chunk.get("gross_salary"),
-                    "net_salary": best_result_chunk.get("net_salary"),
-                    "employee_name": best_result_chunk.get("employee_name"),
-                    "pay_period": best_result_chunk.get("pay_period"),
-                    "employer_name": best_result_chunk.get("employer_name"),
-                    "confidence": best_result_chunk.get("confidence", 0)
-                }
-        
-        elif document_type == DocumentType.ANNUAL_TAX_CERTIFICATE:
-            # For tax certificates, take best result overall
-            if all_results:
-                best_result = max(all_results, key=lambda x: x.get("confidence", 0))
-                merged_result = dict(best_result)
-        
-        elif document_type == DocumentType.BANK_STATEMENT:
-            # For bank statements, aggregate deposits and expenses from all chunks
-            all_deposits = []
-            all_expenses = []
-            best_balance = None
+        self,
+        all_results: List[FinancialData],
+        chunks: List[str],
+    ) -> FinancialData:
+        """Merge results from multiple chunks by taking best data from each."""
+        if not all_results:
+            return FinancialData(confidence=0.0)
+
+        # Find the chunk with highest confidence for base data
+        best_result = max(all_results, key=lambda x: x.confidence)
+
+        # Merge additional data from other chunks
+        merged_data = {}
+
+        # Take best non-null values for single-value fields
+        single_value_fields = [
+            "person_name",
+            "monthly_gross_salary",
+            "monthly_net_salary",
+            "annual_gross_income",
+            "annual_net_income",
+            "employer_name",
+            "pay_period",
+            "tax_year",
+            "total_tax_paid",
+            "account_balance",
+            "average_monthly_income",
+        ]
+
+        for field in single_value_fields:
+            # Find the best value across all results
+            best_value = None
             best_confidence = 0
-            
+
             for result in all_results:
-                if result.get("monthly_deposits"):
-                    all_deposits.extend(result["monthly_deposits"])
-                if result.get("monthly_expenses"):
-                    all_expenses.extend(result["monthly_expenses"])
-                if result.get("account_balance") and result.get("confidence", 0) > best_confidence:
-                    best_balance = result["account_balance"]
-                    best_confidence = result.get("confidence", 0)
-            
-            merged_result = {
-                "account_balance": best_balance,
-                "monthly_deposits": all_deposits,
-                "monthly_expenses": all_expenses,
-                "average_monthly_income": sum(all_deposits) / len(all_deposits) if all_deposits else None,
-                "confidence": max(r.get("confidence", 0) for r in all_results) if all_results else 0
-            }
-        
-        # Add chunk processing info
-        merged_result["chunks_processed"] = len(chunks)
-        merged_result["total_length"] = sum(len(chunk) for chunk in chunks)
-        
-        return merged_result
+                value = getattr(result, field, None)
+                if value is not None and result.confidence > best_confidence:
+                    best_value = value
+                    best_confidence = result.confidence
+
+            merged_data[field] = best_value
+
+        # Aggregate list fields (deposits and expenses)
+        all_deposits = []
+        all_expenses = []
+        all_data_sources = set()
+
+        for result in all_results:
+            if result.monthly_deposits:
+                all_deposits.extend(result.monthly_deposits)
+            if result.monthly_expenses:
+                all_expenses.extend(result.monthly_expenses)
+            if result.data_sources:
+                all_data_sources.update(result.data_sources)
+
+        merged_data["monthly_deposits"] = all_deposits
+        merged_data["monthly_expenses"] = all_expenses
+        merged_data["data_sources"] = list(all_data_sources)
+
+        # Use best overall confidence
+        merged_data["confidence"] = max(r.confidence for r in all_results)
+
+        return FinancialData(**merged_data)

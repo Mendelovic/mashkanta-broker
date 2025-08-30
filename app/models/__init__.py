@@ -1,41 +1,13 @@
 from .document import (
-    DocumentType,
-    DocumentClassificationResult,
-    PayslipData,
-    AnnualTaxCertificateData,
-    BankStatementData,
+    FinancialData,
     DocumentAnalysis,
     StructuredData,
 )
-from .mortgage import (
-    IncomeConsistencyCheck,
-    ValidationResults,
-    DocumentClassificationSummary,
-    IndividualAnalysisSummary,
-    CrossValidationResult,
-    MortgageSimulationRequest,
-    MortgageSimulationResponse,
-    MortgageScenario,
-    MortgageEligibility,
-)
+
 
 __all__ = [
     # Document models
-    "DocumentType",
-    "DocumentClassificationResult",
-    "PayslipData",
-    "AnnualTaxCertificateData",
-    "BankStatementData",
+    "FinancialData",
     "DocumentAnalysis",
     "StructuredData",
-    # Mortgage models
-    "IncomeConsistencyCheck",
-    "ValidationResults",
-    "DocumentClassificationSummary",
-    "IndividualAnalysisSummary",
-    "CrossValidationResult",
-    "MortgageSimulationRequest",
-    "MortgageSimulationResponse",
-    "MortgageScenario",
-    "MortgageEligibility",
 ]
