@@ -1,36 +1,72 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from openai import OpenAI
-import os
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
+from app.config import settings
+from app.routers import mortgage_router
+from app.utils import setup_logging
+
+# Load environment variables
 load_dotenv()
 
-app = FastAPI()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Application lifespan manager."""
+    # Startup
+    setup_logging()
+    import logging
+    logger = logging.getLogger("app.main")
+    logger.info(f"Starting {settings.app_name} v{settings.app_version}")
+    logger.info(f"Debug mode: {settings.debug}")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down application")
 
 
+# Create FastAPI application
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.app_version,
+    description="A FastAPI application for mortgage analysis using financial documents",
+    lifespan=lifespan,
+    debug=settings.debug,
+)
+
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=settings.cors_allow_credentials,
+    allow_methods=settings.cors_allow_methods,
+    allow_headers=settings.cors_allow_headers,
+)
+
+
+# Include routers
+app.include_router(mortgage_router)
+
+
+# Root endpoint
 @app.get("/")
-async def read_root():
-    return {"message": "Hello World"}
+async def root():
+    """Root endpoint returning basic API information."""
+    return {
+        "message": f"Welcome to {settings.app_name}",
+        "version": settings.app_version,
+        "status": "operational"
+    }
 
 
-class GPT5Request(BaseModel):
-    prompt: str
-    reasoning_effort: str = "medium"  # minimal, low, medium, high
-    verbosity: str = "medium"  # low, medium, high
-
-
-@app.post("/gpt5")
-async def gpt5_response(request: GPT5Request):
-    try:
-        response = client.responses.create(
-            model="gpt-5-mini",
-            input=request.prompt,
-        )
-        return {
-            "response": response.output_text,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {
+        "status": "healthy",
+        "version": settings.app_version,
+    }

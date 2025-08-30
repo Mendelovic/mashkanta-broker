@@ -2,5 +2,5 @@ fastapi
 uvicorn[standard]
 openai
 python-dotenv
-requests
-pydantic
+pydantic-settings
+azure-ai-documentintelligence
