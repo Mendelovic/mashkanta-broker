@@ -57,24 +57,6 @@ async def unified_chat_endpoint(
     - files_processed: Number of files processed (if any)
     """
     try:
-        # DEBUG LOGGING - Track what we receive
-        logger.info("=== CHAT DEBUG ===")
-        logger.info(f"Message received: {message[:50] if message else 'No message'}...")
-        logger.info(f"Thread ID received: {thread_id}")
-        logger.info(f"Files parameter: {files}")
-        logger.info(f"Files type: {type(files)}")
-
-        # Handle different file input scenarios
-        logger.info(f"Files is a list with {len(files)} items")
-        for i, file in enumerate(files):
-            if file and hasattr(file, "filename") and file.filename:
-                logger.info(
-                    f"File {i}: {file.filename} - Size: {file.size if hasattr(file, 'size') else 'unknown'}"
-                )
-            else:
-                logger.info(f"File {i}: None or empty")
-        logger.info("=== END DEBUG ===")
-
         files_processed_count = 0
         temp_paths = []
 
