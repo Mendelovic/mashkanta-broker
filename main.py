@@ -6,21 +6,30 @@ from dotenv import load_dotenv
 from app.config import settings
 from app.routers import chat_router
 from app.utils import setup_logging
+from app.agents.orchestrator import create_mortgage_broker_orchestrator
 
 # Load environment variables
 load_dotenv()
+
+# Global orchestrator instance
+global_orchestrator = None
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Application lifespan manager."""
     # Startup
+    global global_orchestrator
     setup_logging()
     import logging
 
     logger = logging.getLogger("app.main")
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
     logger.info(f"Debug mode: {settings.debug}")
+
+    # Create global orchestrator instance once
+    global_orchestrator = create_mortgage_broker_orchestrator()
+    logger.info("Created global orchestrator agent")
 
     yield
 

@@ -1,279 +1,258 @@
+"""Utility tools exposed to the mortgage-broker agent."""
+
 import logging
-from typing import List, Dict
+from typing import Any, Dict, List
+
 from agents import function_tool
 
-from ..models import DocumentAnalysis
-from ..dependencies import (
-    get_document_analysis_service,
-)
-
+from .mortgage_calculator import MortgageCalculator, PropertyType, RiskProfile
+from ..dependencies import get_document_analysis_service
 
 logger = logging.getLogger(__name__)
 
-# Global storage for processed documents in a session
-# In a real application, this would be stored in Redis or a database
-SESSION_DOCUMENTS: Dict[str, List[DocumentAnalysis]] = {}
+_PROPERTY_TYPE_MAP = {
+    PropertyType.FIRST_HOME.value: PropertyType.FIRST_HOME,
+    PropertyType.UPGRADE.value: PropertyType.UPGRADE,
+    PropertyType.INVESTMENT.value: PropertyType.INVESTMENT,
+}
+
+_RISK_PROFILE_MAP = {
+    RiskProfile.CONSERVATIVE.value: RiskProfile.CONSERVATIVE,
+    RiskProfile.STANDARD.value: RiskProfile.STANDARD,
+    RiskProfile.AGGRESSIVE.value: RiskProfile.AGGRESSIVE,
+}
+
+
+def _format_currency(amount: float) -> str:
+    """Return a human-friendly currency string."""
+    return f"₪{amount:,.0f}" if amount is not None else "₪ לא זמין"
+
+
+def _summarize_key_values(pairs: list[dict[str, Any]]) -> str:
+    """Generate a compact summary of key-value pairs from OCR."""
+    if not pairs:
+        return "לא זוהו שדות מפתח במסמך."
+
+    lines: list[str] = []
+    for item in pairs:
+        key = (item.get("key") or "").strip()
+        value = (item.get("value") or "").strip()
+        if not key and not value:
+            continue
+        lines.append(f"- {key or 'שדה ללא תיאור'}: {value or 'ערך חסר'}")
+
+    return "\n".join(lines) if lines else "לא זוהו שדות מפתח במסמך."
+
+
+def _summarize_tables(tables: list[dict[str, Any]]) -> str:
+    """Summarize tables detected in the document."""
+    if not tables:
+        return "לא נמצאו טבלאות במסמך."
+
+    summaries: list[str] = []
+    for idx, table in enumerate(tables, start=1):
+        row_count = table.get("row_count") or 0
+        column_count = table.get("column_count") or 0
+        summaries.append(f"טבלה {idx}: {row_count} שורות, {column_count} עמודות")
+
+    return "\n".join(summaries)
 
 
 @function_tool
-async def analyze_document_from_path(
-    file_path: str, filename: str, session_id: str = "default"
+def send_mock_lender_outreach(client_summary: str) -> str:
+    """Mock sending the client's profile to multiple lenders."""
+    # TODO: Replace with real email or lender API integration when available.
+    return (
+        "שלחתי מייל מסכם לבנק הפועלים, בנק לאומי ומזרחי-טפחות עם הנתונים: "
+        + client_summary
+    )
+
+
+@function_tool
+def fetch_mock_lender_offers(
+    preferred_risk_profile: str = RiskProfile.STANDARD.value,
+) -> Dict[str, Any]:
+    """Return three fabricated lender offers for demo purposes."""
+    # TODO: Replace mocked offers with live lender responses once integrations exist.
+    base_offers: List[Dict[str, Any]] = [
+        {
+            "bank": "בנק הפועלים",
+            "headline": "יציבות עם מרווחי פריים שמרניים",
+            "tracks": [
+                {"name": "פריים", "share": 0.33, "rate": "פריים - 0.1%"},
+                {"name": "קבועה לא צמודה 25 שנה", "share": 0.42, "rate": "4.7%"},
+                {"name": "משתנה כל 5 שנים צמודה", "share": 0.25, "rate": "3.2%"},
+            ],
+            "opening_fee": "₪2,450",
+            "notes": "כולל אפשרות פירעון מוקדם חלקי ללא קנס עד 10% לשנה",
+        },
+        {
+            "bank": "בנק לאומי",
+            "headline": "דגש על רכיב לא צמוד ליציבות",
+            "tracks": [
+                {"name": "פריים", "share": 0.30, "rate": "פריים - 0.05%"},
+                {"name": "קבועה לא צמודה 20 שנה", "share": 0.45, "rate": "4.6%"},
+                {"name": "משתנה כל 5 שנים לא צמודה", "share": 0.25, "rate": "4.0%"},
+            ],
+            "opening_fee": "₪2,100",
+            "notes": "דורש ביטוח חיים ורכוש דרך הסוכנות של הבנק",
+        },
+        {
+            "bank": "מזרחי-טפחות",
+            "headline": "גמישות לפרעון מוקדם והגדלת רכיב פריים",
+            "tracks": [
+                {"name": "פריים", "share": 0.40, "rate": "פריים - 0.15%"},
+                {"name": "קבועה צמודה 18 שנה", "share": 0.35, "rate": "2.9%"},
+                {"name": "משתנה כל 5 שנים צמודה", "share": 0.25, "rate": "3.1%"},
+            ],
+            "opening_fee": "₪2,650",
+            "notes": "מאפשר גרייס חלקי לשנה הראשונה בכפוף לאישור אשראי",
+        },
+    ]
+
+    return {
+        "risk_profile": preferred_risk_profile,
+        "offers": base_offers,
+        "disclaimer": "נתונים לדוגמה עבור הדגמת התהליך בלבד",
+    }
+
+
+@function_tool
+def calculate_mortgage_eligibility(
+    monthly_net_income: float,
+    property_price: float,
+    down_payment_available: float,
+    existing_monthly_loans: float = 0.0,
+    loan_years: int = 25,
+    property_type: str = PropertyType.FIRST_HOME.value,
+    risk_profile: str = RiskProfile.STANDARD.value,
 ) -> str:
-    """
-    Analyze a financial document from a file path and extract data.
-
-    Args:
-        file_path: Path to the document file (PDF)
-        filename: Original filename for reference
-        session_id: Session ID for document storage (optional)
-
-    Returns:
-        Hebrew description of the document analysis results
-    """
+    """Calculate Israeli mortgage eligibility using simple banking rules."""
     try:
-        # Get the document analysis service
-        doc_service = get_document_analysis_service()
+        prop_type = _PROPERTY_TYPE_MAP.get(property_type, PropertyType.FIRST_HOME)
+        risk = _RISK_PROFILE_MAP.get(risk_profile, RiskProfile.STANDARD)
 
-        # Analyze the document
-        analysis = await doc_service.analyze_document(file_path, filename)
+        calc = MortgageCalculator.calculate_eligibility(
+            monthly_net_income=monthly_net_income,
+            property_price=property_price,
+            down_payment_available=down_payment_available,
+            property_type=prop_type,
+            risk_profile=risk,
+            existing_loans_payment=existing_monthly_loans,
+            years=loan_years,
+        )
 
-        # Store in session documents
-        if session_id not in SESSION_DOCUMENTS:
-            SESSION_DOCUMENTS[session_id] = []
-        SESSION_DOCUMENTS[session_id].append(analysis)
-
-        confidence_percent = int(analysis.confidence * 100)
-
-        if analysis.error:
-            return f"שגיאה בניתוח המסמך '{filename}': {analysis.error}"
-
-        result = f"ניתוח המסמך '{filename}':\n"
-        result += f"רמת ביטחון: {confidence_percent}%\n"
-
-        # Add extracted financial data
-        data = analysis.financial_data
-
-        # Show found data types
-        if data.data_sources:
-            types_str = ", ".join(data.data_sources)
-            result += f"סוגי נתונים שנמצאו: {types_str}\n"
-
-        # Show salary information if available
-        if data.monthly_gross_salary or data.monthly_net_salary:
-            result += "\nנתוני שכר:\n"
-            if data.monthly_gross_salary:
-                result += f"• שכר ברוטו חודשי: {data.monthly_gross_salary:,.0f} ₪\n"
-            if data.monthly_net_salary:
-                result += f"• שכר נטו חודשי: {data.monthly_net_salary:,.0f} ₪\n"
-            if data.employer_name:
-                result += f"• מעסיק: {data.employer_name}\n"
-            if data.pay_period:
-                result += f"• תקופת שכר: {data.pay_period}\n"
-
-        # Show annual income if available
-        if data.annual_gross_income or data.annual_net_income:
-            result += "\nנתוני הכנסה שנתית:\n"
-            if data.annual_gross_income:
-                result += f"• הכנסה שנתית ברוטו: {data.annual_gross_income:,.0f} ₪\n"
-            if data.annual_net_income:
-                result += f"• הכנסה שנתית נטו: {data.annual_net_income:,.0f} ₪\n"
-            if data.tax_year:
-                result += f"• שנת המס: {data.tax_year}\n"
-            if data.total_tax_paid:
-                result += f"• סה״כ מס ששולם: {data.total_tax_paid:,.0f} ₪\n"
-
-        # Show banking information if available
-        if (
-            data.account_balance is not None
-            or data.monthly_deposits
-            or data.monthly_expenses
-        ):
-            result += "\nנתוני בנקאות:\n"
-            if data.account_balance is not None:
-                result += f"• יתרה נוכחית: {data.account_balance:,.0f} ₪\n"
-            if data.average_monthly_income:
-                result += (
-                    f"• הכנסה חודשית ממוצעת: {data.average_monthly_income:,.0f} ₪\n"
-                )
-            if data.monthly_deposits:
-                result += f"• סה״כ הפקדות: {len(data.monthly_deposits)} פעולות\n"
-            if data.monthly_expenses:
-                result += f"• סה״כ הוצאות: {len(data.monthly_expenses)} פעולות\n"
-
-        # Show personal info if available
-        if data.person_name:
-            result += f"\nשם: {data.person_name}\n"
-
-        result += f'\nהמסמך נשמר לצורך חישוב משכנתא. סה"כ מסמכים בהפעלה: {len(SESSION_DOCUMENTS[session_id])}'
-
-        return result
-
-    except Exception as e:
-        logger.error(f"Error in analyze_document_from_path: {e}")
-        return f"שגיאה בניתוח המסמך: {str(e)}"
-
-
-@function_tool
-def get_session_documents_status(session_id: str = "default") -> str:
-    """
-    Get status of all documents processed in the current session.
-
-    Args:
-        session_id: Session ID to check (optional)
-
-    Returns:
-        Hebrew summary of processed documents
-    """
-    try:
-        documents = SESSION_DOCUMENTS.get(session_id, [])
-
-        if not documents:
-            return "לא נמצאו מסמכים מעובדים בהפעלה הנוכחית."
-
-        result = f"סטטוס מסמכים בהפעלה הנוכחית ({len(documents)} מסמכים):\n\n"
-
-        # Track what types of data we have across all documents
-        found_salary_data = False
-        found_annual_income = False
-        found_bank_data = False
-
-        for i, doc in enumerate(documents, 1):
-            confidence_percent = int(doc.confidence * 100)
-
-            result += f"{i}. {doc.filename}\n"
-            result += f"   ביטחון: {confidence_percent}%\n"
-
-            # Show what data was found in this document
-            data = doc.financial_data
-            data_types = []
-
-            if data.monthly_gross_salary or data.monthly_net_salary:
-                data_types.append("נתוני שכר")
-                found_salary_data = True
-            if data.annual_gross_income or data.annual_net_income:
-                data_types.append("הכנסה שנתית")
-                found_annual_income = True
-            if (
-                data.account_balance is not None
-                or data.monthly_deposits
-                or data.monthly_expenses
-            ):
-                data_types.append("נתוני בנק")
-                found_bank_data = True
-
-            if data_types:
-                result += f"   נתונים: {', '.join(data_types)}\n"
-            else:
-                result += "   נתונים: לא זוהו נתונים פיננסיים\n"
-
-            if doc.error:
-                result += f"   שגיאה: {doc.error}\n"
-
-            result += "\n"
-
-        # Add recommendations for missing data types
-        missing_docs = []
-
-        if not found_salary_data:
-            missing_docs.append("תלושי שכר (מומלץ 2-3 תלושים אחרונים)")
-        if not found_annual_income:
-            missing_docs.append("תעודת מס שנתית (טופס 106)")
-        if not found_bank_data:
-            missing_docs.append("דפי חשבון (מומלץ 3 חודשים אחרונים)")
-
-        if missing_docs:
-            result += "מסמכים חסרים שמומלץ להעלות:\n"
-            for missing in missing_docs:
-                result += f"• {missing}\n"
-        else:
-            result += "כל סוגי הנתונים הנדרשים נמצאו. ניתן לבצע חישוב משכנתא."
-
-        return result
-
-    except Exception as e:
-        logger.error(f"Error in get_session_documents_status: {e}")
-        return f"שגיאה בקבלת סטטוס המסמכים: {str(e)}"
-
-
-@function_tool
-def clear_session_documents(session_id: str = "default") -> str:
-    """
-    Clear all documents from the current session.
-
-    Args:
-        session_id: Session ID to clear (optional)
-
-    Returns:
-        Confirmation message in Hebrew
-    """
-    try:
-        if session_id in SESSION_DOCUMENTS:
-            doc_count = len(SESSION_DOCUMENTS[session_id])
-            del SESSION_DOCUMENTS[session_id]
-            return (
-                f"נוקו {doc_count} מסמכים מההפעלה הנוכחית. ניתן להתחיל עם מסמכים חדשים."
+        lines: list[str] = ["**סיכום בדיקת זכאות למשכנתא:**", ""]
+        lines.append("**נתוני בסיס:**")
+        lines.append(f"• הכנסה נטו חודשית: {_format_currency(monthly_net_income)}")
+        lines.append(f"• מחיר נכס: {_format_currency(property_price)}")
+        lines.append(f"• הון עצמי זמין: {_format_currency(down_payment_available)}")
+        if existing_monthly_loans:
+            lines.append(
+                f"• התחייבויות חודשיות קיימות: {_format_currency(existing_monthly_loans)}"
             )
-        else:
-            return "לא נמצאו מסמכים לניקוי בהפעלה הנוכחית."
+        lines.append(f"• סוג נכס: {prop_type.value}")
+        lines.append(f"• פרופיל סיכון: {risk.value}")
+        lines.append("")
 
-    except Exception as e:
-        logger.error(f"Error in clear_session_documents: {e}")
-        return f"שגיאה בניקוי המסמכים: {str(e)}"
+        lines.append("**תוצאות:**")
+        status = "זכאי" if calc.is_eligible else "לא זכאי"
+        lines.append(f"• סטטוס: {status} ({calc.eligibility_notes})")
+        lines.append(f"• סכום הלוואה מקסימלי: {_format_currency(calc.max_loan_amount)}")
+        lines.append(
+            f"• יכולת החזר חודשית: {_format_currency(calc.monthly_payment_capacity)}"
+        )
+        lines.append(
+            f"• יחס החזר: {calc.debt_to_income_ratio:.1%} (מקסימום לפי פרופיל {MortgageCalculator.DTI_LIMITS[risk]:.0%})"
+        )
+        lines.append(
+            f"• יחס מימון (LTV): {calc.loan_to_value_ratio:.0%} (מקסימום לפי סוג נכס {MortgageCalculator.LTV_LIMITS[prop_type]:.0%})"
+        )
+        lines.append(f"• הון עצמי נדרש: {_format_currency(calc.required_down_payment)}")
+        lines.append("")
+
+        if calc.is_eligible:
+            lines.append("**תמהיל מומלץ:**")
+            for track, ratio in calc.recommended_tracks.items():
+                amount = calc.max_loan_amount * ratio
+                lines.append(f"• {track}: {ratio:.0%} ({_format_currency(amount)})")
+
+            if calc.market_based_recommendation:
+                lines.append("")
+                lines.append("**הסבר לבחירה:**")
+                lines.append(calc.market_based_recommendation)
+        else:
+            lines.append("**כדי לשפר את הזכאות:**")
+            adjustments = MortgageCalculator.adjust_for_eligibility(
+                monthly_net_income,
+                property_price,
+                down_payment_available,
+                prop_type,
+                existing_monthly_loans,
+            )
+            if "reduce_price" in adjustments:
+                lines.append(
+                    f"• שקול/י להקטין את מחיר הנכס לכ-{_format_currency(adjustments['reduce_price'])}"
+                )
+            if "required_down_payment" in adjustments:
+                extra = adjustments["required_down_payment"] - down_payment_available
+                if extra > 0:
+                    lines.append(f"• יש להשלים הון עצמי של {_format_currency(extra)}")
+            if "required_income" in adjustments:
+                extra_income = adjustments["required_income"] - monthly_net_income
+                if extra_income > 0:
+                    lines.append(
+                        f"• יש צורך בהכנסה חודשית נוספת של {_format_currency(extra_income)}"
+                    )
+
+        return "\n".join(lines)
+
+    except Exception as exc:
+        logger.error("Eligibility calculation failed: %s", exc)
+        return f"ERROR: eligibility calculation failed - {exc}"
 
 
 @function_tool
-def get_mortgage_advice(income_range: str = "", family_status: str = "") -> str:
-    """
-    Provide general mortgage advice based on income and family situation.
+async def analyze_document(
+    file_path: str,
+    locale: str = "he-IL",
+) -> dict:
+    """Run OCR on a document and return structured findings."""
 
-    Args:
-        income_range: Income range in Hebrew (e.g., "10,000-15,000", "מעל 20,000")
-        family_status: Family status in Hebrew (e.g., "זוג צעיר", "משפחה עם ילדים")
-
-    Returns:
-        General mortgage advice in Hebrew
-    """
+    # TODO: Add schema validation and PII scrubbing before returning OCR results to the agent.
     try:
-        advice = "עצות כלליות למשכנתא:\n\n"
+        service = get_document_analysis_service()
+    except RuntimeError as exc:
+        logger.error("Document analysis unavailable: %s", exc)
+        return {"error": "OCR service is not configured."}
 
-        # General advice based on income
-        advice += "עצות בהתאם להכנסה:\n"
-        if "10,000-15,000" in income_range or "עד 15" in income_range:
-            advice += "• שקלו משכנתא משותפת עם הורים\n"
-            advice += "• בדקו תמיכת המדינה לזוגות צעירים\n"
-            advice += "• עדיפות לדירות קטנות יותר כהשקעה ראשונה\n"
-        elif "15,000-25,000" in income_range or (
-            "15" in income_range and "25" in income_range
-        ):
-            advice += "• ניתן לשקול משכנתא סטנדרטית\n"
-            advice += "• מומלץ לחסוך הון עצמי של 20-25%\n"
-            advice += "• בדקו משכנתא משולבת (קבועה + משתנה)\n"
-        elif "מעל 25" in income_range or "25,000+" in income_range:
-            advice += "• ניתן לשקול משכנתא גבוהה יותר\n"
-            advice += "• שקלו השקעה בנכסים נוספים\n"
-            advice += "• מומלץ ייעוץ מקצועי להשקעות\n"
+    try:
+        analysis = await service.analyze_document(file_path, locale=locale)
+    except Exception as exc:  # pragma: no cover - network failures
+        logger.error("Document analysis failed: %s", exc)
+        return {"error": f"document analysis failed - {exc}"}
 
-        advice += "\nעצות כלליות:\n"
-        advice += "• חשוב לוודא יציבות תעסוקתית לפחות שנה\n"
-        advice += "• מומלץ לקבל הצעות מכמה בנקים\n"
-        advice += "• לשמור על יחס חוב להכנסה נמוך מ-40%\n"
-        advice += "• חסכו הון עצמי לפחות 20% ממחיר הנכס\n"
-        advice += "• כללו בתכנון גם עלויות רכישה נוספות (מס, עורך דין, וכו')\n"
+    preview_text = analysis.text[:2000] if analysis.text else ""
+    truncated = bool(analysis.text and len(analysis.text) > 2000)
 
-        # Family status specific advice
-        if family_status:
-            advice += f"\nעצות בהתאם למצב המשפחתי ({family_status}):\n"
-            if "זוג צעיר" in family_status:
-                advice += "• שקלו תוכניות סיוע ממשלתיות לזוגות צעירים\n"
-                advice += "• תכננו לגידול משפחתי עתידי בבחירת הדירה\n"
-            elif "ילדים" in family_status:
-                advice += "• חשבו על גודל הדירה והסביבה החינוכית\n"
-                advice += "• שקלו ביטוח משכנתא למקרה אובדן כושר עבודה\n"
+    return {
+        "file_path": file_path,
+        "locale": locale,
+        "text_preview": preview_text,
+        "text_truncated": truncated,
+        "key_value_pairs": analysis.key_value_pairs,
+        "tables": analysis.tables,
+        "warnings": analysis.warnings,
+        "summary": {
+            "key_values": _summarize_key_values(analysis.key_value_pairs),
+            "tables": _summarize_tables(analysis.tables),
+        },
+    }
 
-        advice += "\nהערה: עצות אלה הן כלליות בלבד. מומלץ ליעץ עם יועץ משכנתאות מקצועי."
 
-        return advice
-
-    except Exception as e:
-        logger.error(f"Error in get_mortgage_advice: {e}")
-        return f"שגיאה במתן עצה כללית: {str(e)}"
+__all__ = [
+    "calculate_mortgage_eligibility",
+    "analyze_document",
+    "send_mock_lender_outreach",
+    "fetch_mock_lender_offers",
+]

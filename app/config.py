@@ -17,25 +17,20 @@ class Settings(BaseSettings):
     azure_doc_intel_endpoint: Optional[str] = None
     azure_doc_intel_key: Optional[str] = None
 
-    # CORS Configuration - Disabled for development
+    # CORS Configuration - relaxed defaults for development
     cors_origins: list[str] = ["*"]  # Allow all origins
     cors_allow_credentials: bool = False  # Must be False when using "*"
     cors_allow_methods: list[str] = ["*"]
     cors_allow_headers: list[str] = ["*"]
 
     # Document Processing Configuration
-    max_file_size_mb: int = 50
     max_files_per_request: int = 10
-    chunk_size: int = 8000
-    chunk_overlap_ratio: float = 0.25
 
     # Session Management Configuration
-    session_db_path: str = "conversations.db"
     default_session_prefix: str = "mortgage_session_"
 
     # Chat Configuration
     max_message_length: int = 2000
-    conversation_history_limit: int = 50
 
     class Config:
         env_file = ".env"

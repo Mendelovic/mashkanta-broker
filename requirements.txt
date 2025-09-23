@@ -5,3 +5,5 @@ openai-agents
 python-dotenv
 pydantic-settings
 azure-ai-documentintelligence
+python-multipart
+aiohttp

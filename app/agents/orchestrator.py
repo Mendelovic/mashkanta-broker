@@ -6,12 +6,14 @@ This module contains the main conversational agent that handles mortgage consult
 
 import logging
 from agents import Agent
+from agents.model_settings import ModelSettings
+from openai.types.shared import Reasoning
 
 from .tools import (
-    analyze_document_from_path,
-    get_session_documents_status,
-    clear_session_documents,
-    get_mortgage_advice,
+    analyze_document,
+    calculate_mortgage_eligibility,
+    send_mock_lender_outreach,
+    fetch_mock_lender_offers,
 )
 
 
@@ -19,55 +21,60 @@ logger = logging.getLogger(__name__)
 
 
 HEBREW_MORTGAGE_BROKER_INSTRUCTIONS = """
-אתה יועץ משכנתאות מומחה בשוק הישראלי. אתה מדבר רק עברית ומתמחה בכל היבטי המשכנתאות בישראל.
+### **[SYSTEM INSTRUCTIONS - ENGLISH]**
+---
+**PRIMARY IDENTITY:** You are an expert Israeli mortgage broker and the client's single point of contact.
 
-התפקיד שלך:
-1. לספק ייעוץ מקצועי ומדויק במשכנתאות
-2. לנתח מסמכים פיננסיים (תלושי שכר, טופס 106, דפי חשבון)
-3. לחשב זכאות למשכנתא ולהציע תרחישים
-4. להסביר את התהליך בצורה ברורה ומובנה
+**CORE MISSION:** Mirror the real broker workflow end-to-end:
+1. Conversationally gather all personal and financial information relevant to eligibility.
+2. Coach the client on uploading Hebrew payslips, bank statements, and supporting documents.
+3. When documents arrive, call `analyze_document`, summarise the structured output in Hebrew, and confirm the key values with the client.
+4. Once the figures are confirmed, call `calculate_mortgage_eligibility` and explain the indicative results and any gaps.
+5. Prepare a short bullet summary and call `send_mock_lender_outreach` so the client knows outreach emails were (mock) sent to leading banks.
+6. Call `fetch_mock_lender_offers` to obtain three demo offers, compare them clearly, highlight pros/cons, and recommend the best option for the client.
+7. Close with precise next steps toward approval (missing documents, legal checks, insurance, signing timeline).
 
-הכלים העומדים לרשותך:
-- ניתוח מסמכים פיננסיים
-- חישוב זכאות למשכנתא
-- מתן עצות כלליות
-- מעקב אחר מסמכים בהפעלה
+**OUT-OF-SCOPE POLICY:**
+- Decline any request that is not about Israeli mortgages or the supporting documentation.
+- Give the refusal in Hebrew, explain that you can only discuss mortgage-related topics, and invite the client to continue with mortgage tasks.
 
-עקרונות עבודה:
-- תמיד דבר בעברית
-- היה מקצועי אך ידידותי
-- הסבר מונחים פיננסיים בפשטות
-- תן המלצות ברורות ומעשיות
-- אל תתחייב על הצעות ספציפיות של בנקים
-- המלץ תמיד להתייעץ עם בנקים או יועצים נוספים לפני החלטה סופית
+**OPERATING PRINCIPLE:**
+- **Lead with authority.** Drive the process while signalling which steps are mocked for the demo.
+- **Validate facts directly.** Every important number must be verified with the client before you rely on it.
+- **Use tools deliberately.** Trigger eligibility and lender-mock tools only after inputs are validated.
+- **Default to Hebrew.** Switch to English only when system or error messages require it.
+- **Transparency.** State that lender outreach and offers are simulated until live integrations replace them.
 
-תגובות אופייניות:
-- הסבר את התהליך שלב אחר שלב
-- בקש מסמכים נוספים אם נדרש
-- הסבר סיכונים ויתרונות
-- תן עצות להשבחת הפרופיל הפיננסי
+---
+### **[PERSONA INSTRUCTIONS - HEBREW]**
+---
+**דמות ראשית:** אתה יועץ משכנתאות ישראלי מנוסה שמוביל את הלקוח לאורך כל הדרך ומדגיש מה בהדמיה.
 
-זכור: אתה כלי עזר לקבלת החלטות, לא חלופה לייעוץ מקצועי אישי.
+**דגשים עיקריים:**
+- לאסוף, לאמת ולסכם את כל הנתונים הפיננסיים; לציין מפורשות מתי פעולה היא הדמיה.
+- להוביל בביטחון, להסביר מה עוד חסר כדי להתקדם מול הבנק שנבחר.
+- להשוות בין ההצעות המודגמות, לפרט יתרונות וחסרונות, ולסיים בהמלצה ברורה.
+
+- אם הלקוח מבקש מידע שאין קשור למשכנתאות בישראל או למסמכים התומכים, סרב בנימוס בעברית והסבר שאתה לא יכול לדון בנושאים אחרים.
+- הנח את הלקוח לארגנט משכנתאות תוכני והסד צעדים של התהליך.
+
+**סגנון פעולה:** מקצועי, אמפתי ובהיר. לאחר כל שלב לסכם בקצרה כדי שהלקוח יבין היכן הוא בתהליך.
 """
 
 
 def create_mortgage_broker_orchestrator() -> Agent:
-    """
-    Create and configure the main mortgage broker orchestrator agent.
-
-    Returns:
-        Configured Agent instance for mortgage consultation in Hebrew
-    """
+    """Create and configure the main mortgage broker orchestrator agent."""
     try:
         agent = Agent(
             name="יועץ משכנתאות ישראלי",
             instructions=HEBREW_MORTGAGE_BROKER_INSTRUCTIONS,
-            model="gpt-5-mini",
+            model="gpt-5",
+            model_settings=ModelSettings(reasoning=Reasoning(effort="low")),
             tools=[
-                analyze_document_from_path,
-                get_session_documents_status,
-                clear_session_documents,
-                get_mortgage_advice,
+                analyze_document,
+                calculate_mortgage_eligibility,
+                send_mock_lender_outreach,
+                fetch_mock_lender_offers,
             ],
         )
 
@@ -77,82 +84,3 @@ def create_mortgage_broker_orchestrator() -> Agent:
     except Exception as e:
         logger.error(f"Failed to create mortgage broker orchestrator agent: {e}")
         raise
-
-
-def create_greeting_message() -> str:
-    """
-    Create a standard Hebrew greeting message for new conversations.
-
-    Returns:
-        Hebrew greeting message
-    """
-    return """שלום! אני היועץ הדיגיטלי שלך למשכנתאות בישראל. 🏠
-
-אני כאן לעזור לך:
-• לנתח מסמכים פיננסיים (תלושי שכר, טופס 106, דפי חשבון)
-• לחשב זכאות למשכנתא
-• להסביר על תהליכי המשכנתא
-• לתת עצות כלליות למימון דירה
-
-איך אני יכול לעזור לך היום?
-
-💡 עצה: אם יש לך מסמכים פיננסיים, אתה יכול להעלות אותם ואני אנתח אותם עבורך."""
-
-
-def create_help_message() -> str:
-    """
-    Create a help message explaining available features.
-
-    Returns:
-        Hebrew help message
-    """
-    return """עזרה - מה אני יכול לעשות בשבילך:
-
-📋 **ניתוח מסמכים:**
-• תלושי שכר - לזיהוי הכנסות חודשיות
-• טופס 106 - לאימות הכנסות שנתיות  
-• דפי חשבון - לבדיקת דפוסי הכנסה והוצאה
-
-🧮 **חישובי משכנתא:**
-• זכאות למשכנתא לפי ההכנסות
-• תרחישים שונים (שמרני, סטנדרטי, אגרסיבי)
-• הערכת סיכונים
-
-💬 **ייעוץ כללי:**
-• הסבר על תהליכי משכנתא
-• עצות לשיפור הפרופיל הפיננסי
-• המלצות להכנת המסמכים
-
-🔧 **פקודות שימושיות:**
-• "מה המצב של המסמכים?" - לבדיקת סטטוס
-• "נקה מסמכים" - להתחלה חדשה
-• "חשב משכנתא" - לחישוב זכאות
-
-זכור: אני כלי עזר לקבלת החלטות. לייעוץ סופי התייעץ עם מקצועי בבנק או יועץ משכנתאות."""
-
-
-def create_document_upload_instructions() -> str:
-    """
-    Create instructions for document upload.
-
-    Returns:
-        Hebrew document upload instructions
-    """
-    return """📄 הוראות העלאת מסמכים:
-
-**מסמכים מומלצים:**
-1. **תלושי שכר** - 2-3 חודשים אחרונים
-2. **טופס 106** - מהשנה האחרונה
-3. **דפי חשבון** - 3 חודשים אחרונים
-
-**דרישות טכניות:**
-• פורמט: PDF בלבד
-• גודל מקסימלי: 50MB לכל קובץ
-• עד 10 קבצים בכל בקשה
-
-**טיפים:**
-• ודא שהטקסט ברור וקריא
-• כלול מסמכים עדכניים ככל הניתן
-• אל תכלול מידע רגיש שאינו נדרש
-
-לאחר העלאת המסמכים, אני אנתח אותם ואציג את התוצאות בעברית."""
