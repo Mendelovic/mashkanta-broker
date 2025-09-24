@@ -31,6 +31,7 @@ class Settings(BaseSettings):
 
     # Chat Configuration
     max_message_length: int = 2000
+    chat_api_key: str | None = None
 
     class Config:
         env_file = ".env"

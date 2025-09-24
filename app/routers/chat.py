@@ -4,7 +4,8 @@ import shutil
 import tempfile
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, HTTPException, Form, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Form, File, UploadFile, Security
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 from agents import Runner
 
@@ -14,10 +15,25 @@ from ..services.session_manager import get_or_create_session
 
 logger = logging.getLogger(__name__)
 
+_api_key_header = APIKeyHeader(name="x-mortgage-api-key", auto_error=False)
+
+
+async def require_api_key(provided: str | None = Security(_api_key_header)) -> None:
+    """Validate the optional API key header for the chat endpoint."""
+    if settings.chat_api_key:
+        if provided != settings.chat_api_key:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+    elif provided:
+        logger.warning(
+            "API key provided but chat_api_key not configured; ignoring header"
+        )
+
+
 router = APIRouter(
     prefix="",  # No prefix since we want /chat at root level
     tags=["chat"],
     responses={404: {"description": "Not found"}},
+    dependencies=[Depends(require_api_key)],
 )
 
 
@@ -43,6 +59,7 @@ async def unified_chat_endpoint(
     Accepts:
     - message: User message (required)
     - thread_id: Session identifier for continuing conversations (optional; server assigns one if missing)
+    - header x-mortgage-api-key: Required when the server is configured with chat_api_key
 
     Returns:
     - response: Agent's response
