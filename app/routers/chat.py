@@ -42,7 +42,7 @@ async def unified_chat_endpoint(
 
     Accepts:
     - message: User message (required)
-    - thread_id: Session identifier for continuing conversations (optional)
+    - thread_id: Session identifier for continuing conversations (optional; server assigns one if missing)
 
     Returns:
     - response: Agent's response
@@ -50,14 +50,12 @@ async def unified_chat_endpoint(
     - files_processed: Number of files processed (if any)
     """
     try:
-        # Get or create session - use mock thread_id if none provided
-        if not thread_id:
-            # Mock thread_id for front-end that doesn't persist IDs between turns
-            thread_id = "mock-session-001"
-            logger.info(f"Using mock thread_id: {thread_id}")
-
-        # TODO: Replace mock-session fallback with real per-user session IDs once the client stores thread identifiers.
+        # Create or retrieve a session; assign a fresh ID when missing
+        provided_thread_id = thread_id
         thread_id, session = get_or_create_session(thread_id)
+
+        if provided_thread_id is None:
+            logger.info("Assigned new session_id: %s", thread_id)
 
         files_processed = 0
         temp_paths: list[str] = []
