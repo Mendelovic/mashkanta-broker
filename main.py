@@ -1,43 +1,37 @@
 from contextlib import asynccontextmanager
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from app.config import settings
-from app.routers import chat_router
+from app.routers import chat_router, timeline_router
 from app.utils import setup_logging
 from app.agents.orchestrator import create_mortgage_broker_orchestrator
 
-# Load environment variables
 load_dotenv()
-
-# Global orchestrator instance
-global_orchestrator = None
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
+async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    # Startup
-    global global_orchestrator
     setup_logging()
-    import logging
 
     logger = logging.getLogger("app.main")
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
     logger.info(f"Debug mode: {settings.debug}")
 
-    # Create global orchestrator instance once
-    global_orchestrator = create_mortgage_broker_orchestrator()
+    app.state.orchestrator = create_mortgage_broker_orchestrator()
     logger.info("Created global orchestrator agent")
 
-    yield
+    try:
+        yield
+    finally:
+        logger.info("Shutting down application")
+        app.state.orchestrator = None
 
-    # Shutdown
-    logger.info("Shutting down application")
 
-
-# Create FastAPI application
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
@@ -46,8 +40,8 @@ app = FastAPI(
     debug=settings.debug,
 )
 
+app.state.orchestrator = None
 
-# Configure CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -56,12 +50,10 @@ app.add_middleware(
     allow_headers=settings.cors_allow_headers,
 )
 
-
-# Include routers
 app.include_router(chat_router)
+app.include_router(timeline_router)
 
 
-# Root endpoint
 @app.get("/")
 async def root():
     """Root endpoint returning basic API information."""
@@ -72,7 +64,6 @@ async def root():
     }
 
 
-# Health check endpoint
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""

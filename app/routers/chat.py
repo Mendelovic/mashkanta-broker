@@ -2,14 +2,24 @@ import logging
 import os
 import shutil
 import tempfile
-from typing import Annotated, Optional
+from typing import Annotated, Optional, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Form, File, UploadFile, Security
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Form,
+    File,
+    UploadFile,
+    Security,
+    Request,
+)
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 from agents import Runner
 
 from ..config import settings
+from ..models.context import ChatRunContext
 from ..services.session_manager import get_or_create_session
 
 
@@ -44,11 +54,13 @@ class ChatResponse(BaseModel):
     response: str
     thread_id: str
     files_processed: Optional[int] = None
+    timeline: Optional[dict[str, Any]] = None
 
 
 # Main endpoint
 @router.post("/chat", response_model=ChatResponse)
 async def unified_chat_endpoint(
+    request: Request,
     message: Annotated[str, Form(max_length=settings.max_message_length)],
     thread_id: Annotated[Optional[str], Form()] = None,
     files: Annotated[Optional[list[UploadFile]], File()] = None,
@@ -67,7 +79,6 @@ async def unified_chat_endpoint(
     - files_processed: Number of files processed (if any)
     """
     try:
-        # Create or retrieve a session; assign a fresh ID when missing
         provided_thread_id = thread_id
         thread_id, session = get_or_create_session(thread_id)
 
@@ -121,7 +132,10 @@ async def unified_chat_endpoint(
                 file_context = (
                     "\n[DOCUMENT_UPLOADS]\n"
                     + "\n".join(upload_lines)
-                    + "\nCall `analyze_document` for each temp_path above, summarize the findings in Hebrew, and confirm key values with the client.\n\n"
+                    + (
+                        '\nCall "analyze_document" for each temp_path above, summarize the findings in '
+                        "Hebrew, and confirm key values with the client.\n\n"
+                    )
                 )
                 message = file_context + message
 
@@ -132,15 +146,18 @@ async def unified_chat_endpoint(
                     except Exception:  # pragma: no cover
                         pass
 
-        # Get the global orchestrator agent
-        from main import global_orchestrator
+        agent = getattr(request.app.state, "orchestrator", None)
+        if agent is None:
+            logger.error("Chat orchestrator is not initialized")
+            raise HTTPException(status_code=503, detail="Chat agent is unavailable")
 
-        agent = global_orchestrator
+        result = await Runner.run(
+            agent,
+            message,
+            session=session,
+            context=ChatRunContext(session_id=thread_id),
+        )
 
-        # Run the agent with the user message
-        result = await Runner.run(agent, message, session=session)
-
-        # Clean up temporary files once the agent has seen the paths
         for temp_path in temp_paths:
             try:
                 os.unlink(temp_path)
@@ -148,10 +165,13 @@ async def unified_chat_endpoint(
             except OSError:
                 logger.warning("Failed to remove temp document: %s", temp_path)
 
+        timeline_state = session.get_timeline().to_dict()
+
         return ChatResponse(
             response=result.final_output,
             thread_id=thread_id,
             files_processed=files_processed or None,
+            timeline=timeline_state,
         )
 
     except HTTPException:

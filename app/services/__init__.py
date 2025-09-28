@@ -1,8 +1,7 @@
-from .session_manager import get_or_create_session
-from .document_analysis import DocumentAnalysisService, AnalyzedDocument
+from .session_manager import get_or_create_session, get_session, InMemorySession
 
 __all__ = [
     "get_or_create_session",
-    "DocumentAnalysisService",
-    "AnalyzedDocument",
+    "get_session",
+    "InMemorySession",
 ]

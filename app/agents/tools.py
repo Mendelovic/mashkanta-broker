@@ -1,12 +1,28 @@
 """Utility tools exposed to the mortgage-broker agent."""
 
+# TODO: Split mortgage, timeline, and OCR helpers into separate modules if this keeps growing.
 import logging
-from typing import Any, Dict, List
+import uuid
+from typing import Any, Dict, List, Optional, TypedDict
 
 from agents import function_tool
+from agents.tool_context import ToolContext
+from azure.ai.documentintelligence.aio import DocumentIntelligenceClient
+from azure.ai.documentintelligence.models import DocumentAnalysisFeature
+from azure.core.credentials import AzureKeyCredential
 
 from .mortgage_calculator import MortgageCalculator, PropertyType, RiskProfile
-from ..dependencies import get_document_analysis_service
+from ..config import settings
+from ..models.context import ChatRunContext
+from ..models.timeline import (
+    TimelineDetail,
+    TimelineState,
+    TimelineEvent,
+    TimelineEventStatus,
+    TimelineEventType,
+    TimelineStage,
+)
+from ..services.session_manager import get_session
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +37,26 @@ _RISK_PROFILE_MAP = {
     RiskProfile.STANDARD.value: RiskProfile.STANDARD,
     RiskProfile.AGGRESSIVE.value: RiskProfile.AGGRESSIVE,
 }
+
+# TODO: Close the cached DocumentIntelligenceClient during app shutdown to release resources.
+_document_client: DocumentIntelligenceClient | None = None
+
+
+def _get_document_client() -> DocumentIntelligenceClient:
+    """Return a cached Azure Document Intelligence client."""
+    global _document_client
+
+    if _document_client is not None:
+        return _document_client
+
+    if not settings.azure_doc_intel_endpoint or not settings.azure_doc_intel_key:
+        raise RuntimeError("Azure Document Intelligence credentials are not configured.")
+
+    _document_client = DocumentIntelligenceClient(
+        endpoint=settings.azure_doc_intel_endpoint,
+        credential=AzureKeyCredential(settings.azure_doc_intel_key),
+    )
+    return _document_client
 
 
 def _format_currency(amount: float) -> str:
@@ -56,6 +92,13 @@ def _summarize_tables(tables: list[dict[str, Any]]) -> str:
         summaries.append(f"טבלה {idx}: {row_count} שורות, {column_count} עמודות")
 
     return "\n".join(summaries)
+
+
+class TimelineDetailInput(TypedDict, total=False):
+    """Key/value pair accepted by the timeline event tool."""
+
+    label: str
+    value: str
 
 
 @function_tool
@@ -213,6 +256,85 @@ def calculate_mortgage_eligibility(
 
 
 @function_tool
+def record_timeline_event(
+    ctx: ToolContext[ChatRunContext],
+    *,
+    title: str,
+    stage: str,
+    event_type: str,
+    status: str = TimelineEventStatus.ACTIVE.value,
+    description: Optional[str] = None,
+    bank_name: Optional[str] = None,
+    details: Optional[list[TimelineDetailInput]] = None,
+    event_id: Optional[str] = None,
+) -> str:
+    """Create or update a timeline event for the active chat session."""
+
+    context = getattr(ctx, "context", None)
+    if not isinstance(context, ChatRunContext):
+        return "ERROR: timeline context unavailable for this tool call."
+
+    session = get_session(context.session_id)
+    if session is None:
+        return f"ERROR: session {context.session_id} not found."
+
+    try:
+        stage_enum = TimelineStage(stage)
+    except ValueError:
+        valid = ", ".join(stage.value for stage in TimelineStage)
+        return f"ERROR: unknown stage '{stage}'. Expected one of: {valid}."
+
+    try:
+        type_enum = TimelineEventType(event_type)
+    except ValueError:
+        valid = ", ".join(t.value for t in TimelineEventType)
+        return f"ERROR: unknown event_type '{event_type}'. Expected one of: {valid}."
+
+    try:
+        status_enum = TimelineEventStatus(status)
+    except ValueError:
+        valid = ", ".join(s.value for s in TimelineEventStatus)
+        return f"ERROR: unknown status '{status}'. Expected one of: {valid}."
+
+    detail_items: list[TimelineDetail] = []
+    if details:
+        for entry in details:
+            label = str(entry.get("label", "")).strip()
+            value = str(entry.get("value", "")).strip()
+            if not label and not value:
+                continue
+            detail_items.append(
+                TimelineDetail(label=label or "detail", value=value or "")
+            )
+
+    new_event = TimelineEvent(
+        id=event_id or uuid.uuid4().hex,
+        type=type_enum,
+        title=title,
+        stage=stage_enum,
+        status=status_enum,
+        description=description,
+        bank_name=bank_name,
+        details=detail_items,
+    )
+
+    def _apply_timeline(state: TimelineState) -> None:
+        state.upsert_event(new_event)
+
+    state = session.apply_timeline_update(_apply_timeline)
+
+    logger.info(
+        "timeline event recorded",
+        extra={"session_id": context.session_id, "event_id": new_event.id},
+    )
+
+    return (
+        f"Timeline updated: event={new_event.id}, stage={new_event.stage.value}, "
+        f"status={new_event.status.value}, version={state.version}"
+    )
+
+
+@function_tool
 async def analyze_document(
     file_path: str,
     locale: str = "he-IL",
@@ -221,31 +343,73 @@ async def analyze_document(
 
     # TODO: Add schema validation and PII scrubbing before returning OCR results to the agent.
     try:
-        service = get_document_analysis_service()
+        client = _get_document_client()
     except RuntimeError as exc:
         logger.error("Document analysis unavailable: %s", exc)
         return {"error": "OCR service is not configured."}
 
     try:
-        analysis = await service.analyze_document(file_path, locale=locale)
+        # TODO: Offload file IO to a worker when concurrency grows so we don't block the event loop.
+        with open(file_path, "rb") as stream:
+            poller = await client.begin_analyze_document(
+                "prebuilt-layout",
+                stream,
+                locale=locale,
+                features=[DocumentAnalysisFeature.KEY_VALUE_PAIRS],
+            )
+        result = await poller.result()
     except Exception as exc:  # pragma: no cover - network failures
         logger.error("Document analysis failed: %s", exc)
         return {"error": f"document analysis failed - {exc}"}
 
-    preview_text = analysis.text[:2000] if analysis.text else ""
-    truncated = bool(analysis.text and len(analysis.text) > 2000)
+    full_text = result.content or ""
+
+    kv_pairs: List[Dict[str, Any]] = []
+    for pair in getattr(result, "key_value_pairs", None) or []:
+        kv_pairs.append(
+            {
+                "key": pair.key.content if getattr(pair, "key", None) else "",
+                "value": pair.value.content if getattr(pair, "value", None) else "",
+                "confidence": getattr(pair, "confidence", None),
+            }
+        )
+
+    table_entries: List[Dict[str, Any]] = []
+    for table in getattr(result, "tables", None) or []:
+        rows: List[List[str]] = []
+        cells = getattr(table, "cells", None) or []
+        max_row = max((cell.row_index for cell in cells), default=-1)
+        for _ in range(max_row + 1):
+            rows.append([])
+        for cell in cells:
+            while len(rows[cell.row_index]) <= cell.column_index:
+                rows[cell.row_index].append("")
+            rows[cell.row_index][cell.column_index] = cell.content or ""
+        table_entries.append(
+            {
+                "row_count": getattr(table, "row_count", None),
+                "column_count": getattr(table, "column_count", None),
+                "rows": rows,
+                "confidence": getattr(table, "confidence", None),
+            }
+        )
+
+    warnings = [w.code for w in (getattr(result, "warnings", None) or [])]
+
+    preview_text = full_text[:2000]
+    truncated = bool(full_text and len(full_text) > 2000)
 
     return {
         "file_path": file_path,
         "locale": locale,
         "text_preview": preview_text,
         "text_truncated": truncated,
-        "key_value_pairs": analysis.key_value_pairs,
-        "tables": analysis.tables,
-        "warnings": analysis.warnings,
+        "key_value_pairs": kv_pairs,
+        "tables": table_entries,
+        "warnings": warnings,
         "summary": {
-            "key_values": _summarize_key_values(analysis.key_value_pairs),
-            "tables": _summarize_tables(analysis.tables),
+            "key_values": _summarize_key_values(kv_pairs),
+            "tables": _summarize_tables(table_entries),
         },
     }
 
@@ -255,4 +419,5 @@ __all__ = [
     "analyze_document",
     "send_mock_lender_outreach",
     "fetch_mock_lender_offers",
+    "record_timeline_event",
 ]

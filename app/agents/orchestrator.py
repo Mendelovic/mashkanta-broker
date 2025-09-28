@@ -15,6 +15,7 @@ from .tools import (
     calculate_mortgage_eligibility,
     send_mock_lender_outreach,
     fetch_mock_lender_offers,
+    record_timeline_event,
 )
 
 
@@ -38,6 +39,7 @@ Your mission is to guide clients through the *entire workflow of a real mortgage
 - **Default to Hebrew.** Use English only for system or error messages.
 - **Transparency.** Make it clear when actions are simulated.
 - **Progress tracking.** After each stage, give the client a short summary of where they are in the process.
+- **Timeline updates.** Whenever you reach or complete a major milestone (consultation, documents, eligibility, offers, negotiation, approval), call `record_timeline_event` with the appropriate stage, status, and important details.
 - **Authority + empathy.** Lead confidently but explain in a supportive, clear way.
 
 ### [OUT-OF-SCOPE POLICY]
@@ -63,6 +65,7 @@ def create_mortgage_broker_orchestrator() -> Agent:
                 calculate_mortgage_eligibility,
                 send_mock_lender_outreach,
                 fetch_mock_lender_offers,
+                record_timeline_event,
             ],
         )
 
