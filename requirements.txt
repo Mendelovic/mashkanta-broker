@@ -3,7 +3,12 @@ uvicorn[standard]
 openai
 openai-agents
 python-dotenv
+pydantic>=2
 pydantic-settings
 azure-ai-documentintelligence
 python-multipart
 aiohttp
+numpy
+pandas
+pyyaml
+hypothesis

@@ -77,6 +77,5 @@ celerybeat-schedule
 # VS Code settings
 .vscode/
 
-# Claude Code
-*.claude
-CLAUDE.md
+artifacts/
+scripts/

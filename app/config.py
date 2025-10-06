@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
 
@@ -32,11 +32,13 @@ class Settings(BaseSettings):
     # Chat Configuration
     max_message_length: int = 2000
     chat_api_key: str | None = None
+    agent_max_turns: int = 30
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "ignore"  # Ignore extra environment variables
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 # Global settings instance

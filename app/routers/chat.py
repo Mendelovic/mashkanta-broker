@@ -156,6 +156,7 @@ async def unified_chat_endpoint(
             message,
             session=session,
             context=ChatRunContext(session_id=thread_id),
+            max_turns=settings.agent_max_turns,
         )
 
         for temp_path in temp_paths:
