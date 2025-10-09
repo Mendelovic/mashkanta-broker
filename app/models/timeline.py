@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -40,6 +40,10 @@ class TimelineStage(str, Enum):
     APPROVAL = "approval"
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 @dataclass
 class TimelineDetail:
     label: str
@@ -58,7 +62,7 @@ class TimelineEvent:
     status: TimelineEventStatus = TimelineEventStatus.PENDING
     description: Optional[str] = None
     bank_name: Optional[str] = None
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=_utcnow)
     details: List[TimelineDetail] = field(default_factory=list)
 
     def to_frontend_dict(self) -> Dict[str, Any]:
