@@ -1,5 +1,5 @@
 """
-Israeli mortgage calculation helpers (demo).
+Israeli mortgage eligibility evaluation helpers (demo).
 
 Provides indicative eligibility checks with simplified Israeli banking rules.
 For production accuracy, tie in live market data and full regulatory logic
@@ -8,7 +8,7 @@ For production accuracy, tie in live market data and full regulatory logic
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Optional
+from typing import Dict
 
 
 class PropertyType(Enum):
@@ -28,8 +28,8 @@ class RiskProfile(Enum):
 
 
 @dataclass
-class MortgageCalculation:
-    """Mortgage calculation results."""
+class MortgageEligibilityResult:
+    """Snapshot of an eligibility evaluation."""
 
     max_loan_amount: float
     monthly_payment_capacity: float
@@ -39,13 +39,11 @@ class MortgageCalculation:
     total_property_price: float
     is_eligible: bool
     eligibility_notes: str
-    recommended_tracks: Dict[str, float]
-    market_based_recommendation: Optional[str] = None
 
 
-class MortgageCalculator:
+class MortgageEligibilityEvaluator:
     """
-    Israeli mortgage calculator based on banking regulations.
+    Israeli mortgage eligibility evaluator based on banking regulations.
 
     Key Rules:
     - DTI (Debt to Income): Max 30-40% of net income for mortgage payments
@@ -57,25 +55,19 @@ class MortgageCalculator:
     DTI_LIMITS = {
         RiskProfile.CONSERVATIVE: 0.30,  # 30% of net income
         RiskProfile.STANDARD: 0.35,      # 35% of net income
-        RiskProfile.AGGRESSIVE: 0.40     # 40% of net income
+        RiskProfile.AGGRESSIVE: 0.40,    # 40% of net income
     }
 
     LTV_LIMITS = {
         PropertyType.FIRST_HOME: 0.75,   # 75% financing
         PropertyType.UPGRADE: 0.70,      # 70% financing
-        PropertyType.INVESTMENT: 0.50    # 50% financing
-    }
-
-    MARKET_NOTES = {
-        RiskProfile.CONSERVATIVE: "החלוקה שומרת על יציבות ומוותרת על תנודתיות מיותרת.",
-        RiskProfile.STANDARD: "החלוקה מאוזנת בין פריים למסלולים קבועים בהתאם לקווים המקובלים בישראל.",
-        RiskProfile.AGGRESSIVE: "החלוקה מנצלת יותר את מסלולי הפריים והמשתנה לטובת גמישות גבוהה יותר.",
+        PropertyType.INVESTMENT: 0.50,   # 50% financing
     }
 
     @classmethod
-    # TODO: Replace static interest rate and tamhil mix with data-driven calculations.
+    # TODO: Replace static interest rate with data-driven calculations.
     # TODO: Bring in full Israeli underwriting rules (credit history, age limits, employment types).
-    def calculate_eligibility(
+    def evaluate(
         cls,
         monthly_net_income: float,
         property_price: float,
@@ -84,8 +76,8 @@ class MortgageCalculator:
         risk_profile: RiskProfile = RiskProfile.STANDARD,
         existing_loans_payment: float = 0,
         years: int = 25,
-    ) -> MortgageCalculation:
-        """Calculate mortgage eligibility based on Israeli standards."""
+    ) -> MortgageEligibilityResult:
+        """Evaluate mortgage eligibility based on Israeli standards."""
 
         dti_limit = cls.DTI_LIMITS[risk_profile]
         max_monthly_payment = (monthly_net_income * dti_limit) - existing_loans_payment
@@ -138,12 +130,7 @@ class MortgageCalculator:
         if is_eligible and not notes:
             notes.append("הלקוח עומד בדרישות הבנק")
 
-        recommended_tracks = cls._recommend_tracks(
-            max_loan_amount, property_type, risk_profile
-        )
-        market_explanation = cls.MARKET_NOTES.get(risk_profile)
-
-        return MortgageCalculation(
+        return MortgageEligibilityResult(
             max_loan_amount=max_loan_amount,
             monthly_payment_capacity=max_monthly_payment,
             required_down_payment=required_down_payment,
@@ -152,8 +139,6 @@ class MortgageCalculator:
             total_property_price=property_price,
             is_eligible=is_eligible,
             eligibility_notes=" | ".join(notes),
-            recommended_tracks=recommended_tracks,
-            market_based_recommendation=market_explanation,
         )
 
     @staticmethod
@@ -172,34 +157,8 @@ class MortgageCalculator:
             return loan_amount * factor
         return loan_amount / months
 
-    @staticmethod
-    def _recommend_tracks(
-        _loan_amount: float,
-        _property_type: PropertyType,
-        risk_profile: RiskProfile,
-    ) -> Dict[str, float]:
-        """Return a simple tamhil recommendation by risk profile."""
-
-        if risk_profile == RiskProfile.CONSERVATIVE:
-            return {
-                "קבועה לא צמודה 25 שנה": 0.50,
-                "פריים": 0.30,
-                "קבועה צמודה 15 שנה": 0.20,
-            }
-        if risk_profile == RiskProfile.AGGRESSIVE:
-            return {
-                "פריים": 0.55,
-                "משתנה כל 5 שנים": 0.25,
-                "קבועה צמודה 20 שנה": 0.20,
-            }
-        return {
-            "פריים": 0.40,
-            "קבועה לא צמודה 25 שנה": 0.35,
-            "משתנה כל 5 שנים": 0.25,
-        }
-
     @classmethod
-    def adjust_for_eligibility(
+    def adjustments_to_qualify(
         cls,
         monthly_net_income: float,
         property_price: float,
@@ -207,7 +166,7 @@ class MortgageCalculator:
         property_type: PropertyType = PropertyType.FIRST_HOME,
         existing_loans_payment: float = 0,
     ) -> Dict[str, float]:
-        """Calculate adjustments needed to become eligible."""
+        """Calculate the adjustments required to turn an ineligible case into an eligible one."""
 
         scenarios: Dict[str, float] = {}
 
@@ -216,7 +175,7 @@ class MortgageCalculator:
             if adjusted_price <= 0:
                 continue
 
-            calc = cls.calculate_eligibility(
+            calc = cls.evaluate(
                 monthly_net_income,
                 adjusted_price,
                 down_payment_available,
@@ -229,7 +188,7 @@ class MortgageCalculator:
                 scenarios["reduce_price"] = adjusted_price
                 break
 
-        calc = cls.calculate_eligibility(
+        calc = cls.evaluate(
             monthly_net_income,
             property_price,
             down_payment_available,
@@ -241,7 +200,7 @@ class MortgageCalculator:
 
         for income_increase in range(0, 20_000, 1_000):
             adjusted_income = monthly_net_income + income_increase
-            calc = cls.calculate_eligibility(
+            calc = cls.evaluate(
                 adjusted_income,
                 property_price,
                 down_payment_available,

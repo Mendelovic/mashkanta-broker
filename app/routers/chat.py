@@ -130,12 +130,7 @@ async def unified_chat_endpoint(
                     )
 
                 file_context = (
-                    "\n[DOCUMENT_UPLOADS]\n"
-                    + "\n".join(upload_lines)
-                    + (
-                        '\nCall "analyze_document" for each temp_path above, summarize the findings in '
-                        "Hebrew, and confirm key values with the client.\n\n"
-                    )
+                    "\n[DOCUMENT_UPLOADS]\n" + "\n".join(upload_lines) + "\n\n"
                 )
                 message = file_context + message
 

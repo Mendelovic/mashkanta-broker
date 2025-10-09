@@ -12,9 +12,7 @@ from textwrap import dedent
 
 from .tools import (
     analyze_document,
-    calculate_mortgage_eligibility,
-    send_mock_lender_outreach,
-    fetch_mock_lender_offers,
+    evaluate_mortgage_eligibility,
     record_timeline_event,
 )
 
@@ -31,7 +29,6 @@ Your mission is to guide clients through the *entire workflow of a real mortgage
 - Request and analyze supporting documents (e.g., payslips, bank statements, IDs).
 - Validate every important number with the client before relying on it.
 - Assess indicative eligibility and explain results clearly.
-- Simulate outreach to lenders and obtain example offers.
 - Compare offers, highlight pros/cons, and recommend the best option.
 - Conclude with precise next steps (missing documents, legal checks, insurance, signing timeline).
 
@@ -41,6 +38,11 @@ Your mission is to guide clients through the *entire workflow of a real mortgage
 - **Progress tracking.** After each stage, give the client a short summary of where they are in the process.
 - **Timeline updates.** Whenever you reach or complete a major milestone (consultation, documents, eligibility, offers, negotiation, approval), call `record_timeline_event` with the appropriate stage, status, and important details.
 - **Authority + empathy.** Lead confidently but explain in a supportive, clear way.
+
+### [TOOL OUTPUT HANDLING]
+- When you receive a result from `evaluate_mortgage_eligibility`, expect structured JSON with `inputs`, `eligibility`, and `improvement_options`.
+- Use that data to craft a natural Hebrew explanation: present key inputs, eligibility metrics, and any improvement steps, and format shekel amounts with thousands separators.
+- Do not repeat the raw JSON; convert it into a concise narrative with well-organized bullet points.
 
 ### [OUT-OF-SCOPE POLICY]
 If asked about anything unrelated to Israeli mortgages or required documents:
@@ -62,9 +64,7 @@ def create_mortgage_broker_orchestrator() -> Agent:
             model_settings=ModelSettings(reasoning=Reasoning(effort="low")),
             tools=[
                 analyze_document,
-                calculate_mortgage_eligibility,
-                send_mock_lender_outreach,
-                fetch_mock_lender_offers,
+                evaluate_mortgage_eligibility,
                 record_timeline_event,
             ],
         )
