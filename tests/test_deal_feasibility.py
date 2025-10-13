@@ -1,0 +1,47 @@
+import json
+
+from app.services.deal_feasibility import run_feasibility_checks
+from app.domain.schemas import FeasibilityResult
+
+
+def test_run_feasibility_passes_for_reasonable_case():
+    result = run_feasibility_checks(
+        property_price=1_200_000,
+        down_payment_available=400_000,
+        monthly_net_income=20_000,
+        existing_monthly_loans=0,
+        loan_years=25,
+        property_type="single",
+    )
+
+    assert isinstance(result, FeasibilityResult)
+    assert result.is_feasible
+    assert not result.issues
+
+
+def test_run_feasibility_flags_high_ltv():
+    result = run_feasibility_checks(
+        property_price=1_000_000,
+        down_payment_available=100_000,
+        monthly_net_income=20_000,
+        existing_monthly_loans=0,
+        loan_years=25,
+        property_type="single",
+    )
+
+    assert not result.is_feasible
+    assert any(issue.code == "ltv_exceeds_limit" for issue in result.issues)
+
+
+def test_run_feasibility_flags_high_pti():
+    result = run_feasibility_checks(
+        property_price=1_000_000,
+        down_payment_available=500_000,
+        monthly_net_income=6_000,
+        existing_monthly_loans=1_500,
+        loan_years=25,
+        property_type="single",
+    )
+
+    assert not result.is_feasible
+    assert any(issue.code == "pti_exceeds_limit" for issue in result.issues)
