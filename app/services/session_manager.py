@@ -15,7 +15,10 @@ from agents.items import TResponseInputItem
 from agents.memory.session import SessionABC
 
 from ..config import settings
+from ..domain.schemas import IntakeSubmission, InterviewRecord
 from ..models.timeline import TimelineState
+from ..domain.schemas import PlanningContext
+from ..models.intake import IntakeRevision, IntakeStore
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,8 @@ class InMemorySession(SessionABC):
         self._items: list[TResponseInputItem] = []
         self._lock = threading.RLock()
         self._timeline = TimelineState()
+        self._intake = IntakeStore()
+        self._planning_context: PlanningContext | None = None
         self._timeline_watchers: set[asyncio.Queue[TimelineUpdatePayload]] = set()
 
     async def get_items(self, limit: Optional[int] = None) -> list[TResponseInputItem]:
@@ -56,6 +61,8 @@ class InMemorySession(SessionABC):
         with self._lock:
             self._items.clear()
             self._timeline.clear()
+            self._intake.clear()
+            self._planning_context = None
             watchers = list(self._timeline_watchers)
             payload = self._timeline.to_dict()
         self._broadcast_timeline(payload, watchers)
@@ -79,6 +86,39 @@ class InMemorySession(SessionABC):
             payload = updated.to_dict()
         self._broadcast_timeline(payload, watchers)
         return copy.deepcopy(updated)
+
+    # Intake helpers
+    # ------------------------------------------------------------------
+
+    def get_intake(self) -> IntakeStore:
+        with self._lock:
+            return copy.deepcopy(self._intake)
+
+    def get_intake_record(self) -> Optional[InterviewRecord]:
+        with self._lock:
+            current = self._intake.current()
+            if current is None:
+                return None
+            return current.record.model_copy(deep=True)
+
+    def save_intake_submission(self, submission: IntakeSubmission) -> IntakeRevision:
+        with self._lock:
+            revision = self._intake.submit(submission)
+            self._planning_context = None
+        return revision
+
+    def set_planning_context(self, context: PlanningContext) -> PlanningContext:
+        with self._lock:
+            self._planning_context = context.model_copy(deep=True)
+            return self._planning_context.model_copy(deep=True)
+
+    def get_planning_context(self) -> PlanningContext | None:
+        with self._lock:
+            return (
+                self._planning_context.model_copy(deep=True)
+                if self._planning_context
+                else None
+            )
 
     def register_timeline_watcher(self) -> asyncio.Queue[TimelineUpdatePayload]:
         queue: asyncio.Queue[TimelineUpdatePayload] = asyncio.Queue()

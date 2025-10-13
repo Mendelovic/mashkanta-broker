@@ -4,6 +4,12 @@ import logging
 from typing import Literal, NotRequired, TypedDict
 
 from agents import function_tool
+
+from ..guardrails import (
+    eligibility_compliance_guardrail,
+    intake_required_guardrail,
+    planning_required_guardrail,
+)
 from app.services.mortgage_eligibility import (
     MortgageEligibilityEvaluator,
     PropertyType,
@@ -172,3 +178,12 @@ def evaluate_mortgage_eligibility(
     except Exception as exc:
         logger.error("Eligibility calculation failed: %s", exc)
         return {"error": f"eligibility calculation failed - {exc}"}
+
+
+evaluate_mortgage_eligibility.tool_input_guardrails = [
+    intake_required_guardrail,
+    planning_required_guardrail,
+]
+evaluate_mortgage_eligibility.tool_output_guardrails = [
+    eligibility_compliance_guardrail
+]

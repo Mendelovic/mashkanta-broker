@@ -7,6 +7,7 @@ from .timeline import (
     TimelineStage,
     TimelineState,
 )
+from .intake import IntakeRevision, IntakeStore
 
 __all__ = [
     "ChatRunContext",
@@ -16,5 +17,6 @@ __all__ = [
     "TimelineEventType",
     "TimelineStage",
     "TimelineState",
+    "IntakeRevision",
+    "IntakeStore",
 ]
-

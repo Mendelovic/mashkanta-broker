@@ -55,6 +55,8 @@ class ChatResponse(BaseModel):
     thread_id: str
     files_processed: Optional[int] = None
     timeline: Optional[dict[str, Any]] = None
+    intake: Optional[dict[str, Any]] = None
+    planning: Optional[dict[str, Any]] = None
 
 
 # Main endpoint
@@ -162,12 +164,19 @@ async def unified_chat_endpoint(
                 logger.warning("Failed to remove temp document: %s", temp_path)
 
         timeline_state = session.get_timeline().to_dict()
+        intake_state = session.get_intake().to_dict()
+        planning_context = session.get_planning_context()
+        planning_state = (
+            planning_context.model_dump() if planning_context is not None else None
+        )
 
         return ChatResponse(
             response=result.final_output,
             thread_id=thread_id,
             files_processed=files_processed or None,
             timeline=timeline_state,
+            intake=intake_state,
+            planning=planning_state,
         )
 
     except HTTPException:
