@@ -6,12 +6,12 @@ from agents.tool_context import ToolContext
 from agents.tool_guardrails import ToolInputGuardrailData, ToolOutputGuardrailData
 
 from app.agents.guardrails import (
+    optimization_required_guardrail,
     eligibility_compliance_guardrail,
     intake_required_guardrail,
     planning_required_guardrail,
 )
 from app.agents.tools.mortgage_eligibility_tool import evaluate_mortgage_eligibility
-from app.domain.schemas import IntakeSubmission
 from app.models.context import ChatRunContext
 from app.services import session_manager
 from app.services.mortgage_eligibility import (
@@ -23,7 +23,7 @@ from app.services.planning_mapper import build_planning_context
 
 from .factories import build_submission
 
-NO_INTAKE_SNIPPET = "לא ניתן להריץ בדיקת זכאות"
+NO_INTAKE_SNIPPET = "לא ניתן"
 NO_PLANNING_SNIPPET = "compute_planning_context"
 VIOLATION_SNIPPET = "בדיקת הזכאות הופסקה"
 
@@ -135,6 +135,47 @@ def test_planning_guardrail_allows_with_context(cleanup_sessions: Callable[[str]
     assert guard_output.behavior["type"] == "allow"
 
 
+def test_optimization_guardrail_blocks_without_result(cleanup_sessions: Callable[[str], None]) -> None:
+    session_id = "guardrail-no-optimization"
+    cleanup_sessions(session_id)
+    session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
+    _, session = session_manager.get_or_create_session(session_id)
+    submission = build_submission()
+    session.save_intake_submission(submission)
+    session.set_planning_context(build_planning_context(submission))
+
+    tool_ctx = create_tool_context(session_id, "{}")
+    guard_output = optimization_required_guardrail.guardrail_function(
+        ToolInputGuardrailData(context=tool_ctx, agent=None)
+    )
+
+    assert guard_output.behavior["type"] == "reject_content"
+
+
+def test_optimization_guardrail_allows_with_result(cleanup_sessions: Callable[[str], None]) -> None:
+    session_id = "guardrail-with-optimization"
+    cleanup_sessions(session_id)
+    session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
+    _, session = session_manager.get_or_create_session(session_id)
+    submission = build_submission()
+    session.save_intake_submission(submission)
+    planning_context = build_planning_context(submission)
+    session.set_planning_context(planning_context)
+
+    from app.services.mix_optimizer import optimize_mixes
+
+    session.set_optimization_result(
+        optimize_mixes(submission.record, planning_context)
+    )
+
+    tool_ctx = create_tool_context(session_id, "{}")
+    guard_output = optimization_required_guardrail.guardrail_function(
+        ToolInputGuardrailData(context=tool_ctx, agent=None)
+    )
+
+    assert guard_output.behavior["type"] == "allow"
+
+
 def test_output_guardrail_rejects_on_violation(cleanup_sessions: Callable[[str], None]) -> None:
     session_id = "guardrail-violation"
     cleanup_sessions(session_id)
@@ -157,15 +198,13 @@ def test_output_guardrail_rejects_on_violation(cleanup_sessions: Callable[[str],
     )
     tool_ctx = create_tool_context(session_id, arguments)
 
-    allow_output = intake_required_guardrail.guardrail_function(
+    assert intake_required_guardrail.guardrail_function(
         ToolInputGuardrailData(context=tool_ctx, agent=None)
-    )
-    assert allow_output.behavior["type"] == "allow"
+    ).behavior["type"] == "allow"
 
-    planning_output = planning_required_guardrail.guardrail_function(
+    assert planning_required_guardrail.guardrail_function(
         ToolInputGuardrailData(context=tool_ctx, agent=None)
-    )
-    assert planning_output.behavior["type"] == "allow"
+    ).behavior["type"] == "allow"
 
     calc = MortgageEligibilityEvaluator.evaluate(
         monthly_net_income=8_000,
@@ -195,8 +234,11 @@ def test_output_guardrail_rejects_on_violation(cleanup_sessions: Callable[[str],
             "required_down_payment": calc.required_down_payment,
             "debt_to_income_ratio": calc.debt_to_income_ratio,
             "loan_to_value_ratio": calc.loan_to_value_ratio,
+            "assessed_monthly_payment": calc.assessed_monthly_payment,
+            "pti_limit_applied": calc.pti_limit_applied,
             "limits": {
-                "dti_limit": MortgageEligibilityEvaluator.DTI_LIMITS[RiskProfile.STANDARD],
+                "pti_limit": calc.pti_limit_applied,
+                "dti_limit": calc.pti_limit_applied,
                 "ltv_limit": MortgageEligibilityEvaluator.LTV_LIMITS[PropertyType.FIRST_HOME],
             },
         },
