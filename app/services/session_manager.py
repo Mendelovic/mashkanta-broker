@@ -15,9 +15,13 @@ from agents.items import TResponseInputItem
 from agents.memory.session import SessionABC
 
 from ..config import settings
-from ..domain.schemas import IntakeSubmission, InterviewRecord
+from ..domain.schemas import (
+    IntakeSubmission,
+    InterviewRecord,
+    PlanningContext,
+    OptimizationResult,
+)
 from ..models.timeline import TimelineState
-from ..domain.schemas import PlanningContext
 from ..models.intake import IntakeRevision, IntakeStore
 
 logger = logging.getLogger(__name__)
@@ -35,6 +39,7 @@ class InMemorySession(SessionABC):
         self._timeline = TimelineState()
         self._intake = IntakeStore()
         self._planning_context: PlanningContext | None = None
+        self._optimization_result: OptimizationResult | None = None
         self._timeline_watchers: set[asyncio.Queue[TimelineUpdatePayload]] = set()
 
     async def get_items(self, limit: Optional[int] = None) -> list[TResponseInputItem]:
@@ -63,6 +68,7 @@ class InMemorySession(SessionABC):
             self._timeline.clear()
             self._intake.clear()
             self._planning_context = None
+            self._optimization_result = None
             watchers = list(self._timeline_watchers)
             payload = self._timeline.to_dict()
         self._broadcast_timeline(payload, watchers)
@@ -105,11 +111,13 @@ class InMemorySession(SessionABC):
         with self._lock:
             revision = self._intake.submit(submission)
             self._planning_context = None
+            self._optimization_result = None
         return revision
 
     def set_planning_context(self, context: PlanningContext) -> PlanningContext:
         with self._lock:
             self._planning_context = context.model_copy(deep=True)
+            self._optimization_result = None
             return self._planning_context.model_copy(deep=True)
 
     def get_planning_context(self) -> PlanningContext | None:
@@ -117,6 +125,19 @@ class InMemorySession(SessionABC):
             return (
                 self._planning_context.model_copy(deep=True)
                 if self._planning_context
+                else None
+            )
+
+    def set_optimization_result(self, result: OptimizationResult) -> OptimizationResult:
+        with self._lock:
+            self._optimization_result = result.model_copy(deep=True)
+            return self._optimization_result.model_copy(deep=True)
+
+    def get_optimization_result(self) -> OptimizationResult | None:
+        with self._lock:
+            return (
+                self._optimization_result.model_copy(deep=True)
+                if self._optimization_result
                 else None
             )
 

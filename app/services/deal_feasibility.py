@@ -71,7 +71,7 @@ def run_feasibility_checks(
     )
 
     pti_ratio = calc.debt_to_income_ratio
-    pti_limit = MortgageEligibilityEvaluator.DTI_LIMITS[RiskProfile.STANDARD]
+    pti_limit = MortgageEligibilityEvaluator.PTI_LIMITS[RiskProfile.STANDARD]
 
     if ltv_ratio > ltv_limit + 1e-6:
         required_down_payment = property_price * (1 - ltv_limit)

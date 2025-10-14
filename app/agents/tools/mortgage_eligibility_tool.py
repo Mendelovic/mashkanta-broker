@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import logging
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, NotRequired, Optional, TypedDict
 
 from agents import function_tool
+from agents.tool_context import ToolContext
 
 from ..guardrails import (
     eligibility_compliance_guardrail,
     intake_required_guardrail,
     planning_required_guardrail,
+    optimization_required_guardrail,
 )
-from app.services.mortgage_eligibility import (
+from ...models.context import ChatRunContext
+from ...services import session_manager
+from ...services.mortgage_eligibility import (
     MortgageEligibilityEvaluator,
     PropertyType,
     RiskProfile,
@@ -31,6 +35,7 @@ class MortgageEligibilityInputs(TypedDict):
 
 
 class MortgageEligibilityLimits(TypedDict):
+    pti_limit: float
     dti_limit: float
     ltv_limit: float
 
@@ -43,7 +48,13 @@ class MortgageEligibilityDetails(TypedDict):
     required_down_payment: float
     debt_to_income_ratio: float
     loan_to_value_ratio: float
+    assessed_monthly_payment: float
+    pti_limit_applied: float
     limits: MortgageEligibilityLimits
+    stress_payment_estimate: NotRequired[float]
+    highest_expected_payment: NotRequired[float]
+    expected_weighted_payment: NotRequired[float]
+    mix_label: NotRequired[str]
 
 
 class MortgageImprovementOption(TypedDict):
@@ -63,6 +74,14 @@ class MortgageEligibilityResult(TypedDict):
     improvement_options: list[MortgageImprovementOption]
 
 
+class MixMetricSnapshot(TypedDict, total=False):
+    base: float
+    stress: float
+    highest: float
+    expected: float
+    label: str
+
+
 _PROPERTY_TYPE_MAP = {
     PropertyType.FIRST_HOME.value: PropertyType.FIRST_HOME,
     PropertyType.UPGRADE.value: PropertyType.UPGRADE,
@@ -76,8 +95,35 @@ _RISK_PROFILE_MAP = {
 }
 
 
+def _resolve_mix_metrics(session_id: str) -> dict[str, Optional[float | str]]:
+    """Extract the recommended mix payment metrics from the active session."""
+
+    session = session_manager.get_session(session_id)
+    if session is None:
+        return {}
+
+    optimization = session.get_optimization_result()
+    if optimization is None:
+        return {}
+
+    try:
+        candidate = optimization.candidates[optimization.recommended_index]
+    except (IndexError, ValueError):
+        return {}
+
+    metrics = candidate.metrics
+    return {
+        "base": metrics.monthly_payment_nis,
+        "stress": metrics.max_payment_under_stress,
+        "highest": metrics.highest_expected_payment_nis,
+        "expected": metrics.expected_weighted_payment_nis,
+        "label": candidate.label,
+    }
+
+
 @function_tool
 def evaluate_mortgage_eligibility(
+    ctx: ToolContext[ChatRunContext],
     monthly_net_income: float,
     property_price: float,
     down_payment_available: float,
@@ -86,7 +132,22 @@ def evaluate_mortgage_eligibility(
     property_type: str = PropertyType.FIRST_HOME.value,
     risk_profile: str = RiskProfile.STANDARD.value,
 ) -> MortgageEligibilityResult | MortgageEligibilityError:
-    """Evaluate Israeli mortgage eligibility using simplified banking rules."""
+    """Evaluate Israeli mortgage eligibility using the latest mix metrics when available."""
+    context = getattr(ctx, "context", None)
+    if not isinstance(context, ChatRunContext):
+        return {"error": "eligibility tool requires chat session context."}
+
+    session = session_manager.get_session(context.session_id)
+    if session is None:
+        return {"error": f"session {context.session_id} not found."}
+
+    mix_metrics = _resolve_mix_metrics(context.session_id)
+    assessed_payment = mix_metrics.get("base")
+    stress_payment = mix_metrics.get("stress")
+    highest_payment = mix_metrics.get("highest") or stress_payment
+    expected_weighted_payment = mix_metrics.get("expected")
+    mix_label = mix_metrics.get("label")
+
     try:
         prop_type = _PROPERTY_TYPE_MAP.get(property_type, PropertyType.FIRST_HOME)
         risk = _RISK_PROFILE_MAP.get(risk_profile, RiskProfile.STANDARD)
@@ -99,6 +160,7 @@ def evaluate_mortgage_eligibility(
             risk_profile=risk,
             existing_loans_payment=existing_monthly_loans,
             years=loan_years,
+            monthly_payment_override=assessed_payment,
         )
 
         inputs: MortgageEligibilityInputs = {
@@ -112,7 +174,8 @@ def evaluate_mortgage_eligibility(
         }
 
         limits: MortgageEligibilityLimits = {
-            "dti_limit": MortgageEligibilityEvaluator.DTI_LIMITS[risk],
+            "pti_limit": calc.pti_limit_applied,
+            "dti_limit": calc.pti_limit_applied,
             "ltv_limit": MortgageEligibilityEvaluator.LTV_LIMITS[prop_type],
         }
 
@@ -124,8 +187,19 @@ def evaluate_mortgage_eligibility(
             "required_down_payment": calc.required_down_payment,
             "debt_to_income_ratio": calc.debt_to_income_ratio,
             "loan_to_value_ratio": calc.loan_to_value_ratio,
+            "assessed_monthly_payment": calc.assessed_monthly_payment,
+            "pti_limit_applied": calc.pti_limit_applied,
             "limits": limits,
         }
+
+        if stress_payment is not None:
+            eligibility["stress_payment_estimate"] = stress_payment
+        if highest_payment is not None:
+            eligibility["highest_expected_payment"] = highest_payment
+        if expected_weighted_payment is not None:
+            eligibility["expected_weighted_payment"] = expected_weighted_payment
+        if mix_label is not None:
+            eligibility["mix_label"] = mix_label
 
         improvement_options: list[MortgageImprovementOption] = []
         if not calc.is_eligible:
@@ -175,7 +249,7 @@ def evaluate_mortgage_eligibility(
             "improvement_options": improvement_options,
         }
 
-    except Exception as exc:
+    except Exception as exc:  # pragma: no cover - defensive logging
         logger.error("Eligibility calculation failed: %s", exc)
         return {"error": f"eligibility calculation failed - {exc}"}
 
@@ -183,7 +257,14 @@ def evaluate_mortgage_eligibility(
 evaluate_mortgage_eligibility.tool_input_guardrails = [
     intake_required_guardrail,
     planning_required_guardrail,
+    optimization_required_guardrail,
 ]
 evaluate_mortgage_eligibility.tool_output_guardrails = [
     eligibility_compliance_guardrail
 ]
+
+
+
+
+
+

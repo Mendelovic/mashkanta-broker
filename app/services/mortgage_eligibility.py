@@ -8,7 +8,7 @@ For production accuracy, tie in live market data and full regulatory logic
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict
+from typing import Dict, Optional
 
 
 class PropertyType(Enum):
@@ -39,6 +39,8 @@ class MortgageEligibilityResult:
     total_property_price: float
     is_eligible: bool
     eligibility_notes: str
+    assessed_monthly_payment: float = 0.0
+    pti_limit_applied: float = 0.5
 
 
 class MortgageEligibilityEvaluator:
@@ -46,22 +48,23 @@ class MortgageEligibilityEvaluator:
     Israeli mortgage eligibility evaluator based on banking regulations.
 
     Key Rules:
-    - DTI (Debt to Income): Max 30-40% of net income for mortgage payments
-    - LTV (Loan to Value): Max 75% for first home, 50-70% for investment
+    - PTI (Payment to Income): Max 50% of disposable income for mortgage payments
+    - LTV (Loan to Value): Max 75% for first home, 70% for upgrade, 50% for investment
     - Minimum income requirements
     """
 
-    # Israeli banking standard limits
-    DTI_LIMITS = {
-        RiskProfile.CONSERVATIVE: 0.30,  # 30% of net income
-        RiskProfile.STANDARD: 0.35,      # 35% of net income
-        RiskProfile.AGGRESSIVE: 0.40,    # 40% of net income
+    PTI_REGULATORY_LIMIT: float = 0.50
+
+    PTI_LIMITS = {
+        RiskProfile.CONSERVATIVE: 0.35,
+        RiskProfile.STANDARD: 0.50,
+        RiskProfile.AGGRESSIVE: 0.50,
     }
 
     LTV_LIMITS = {
-        PropertyType.FIRST_HOME: 0.75,   # 75% financing
-        PropertyType.UPGRADE: 0.70,      # 70% financing
-        PropertyType.INVESTMENT: 0.50,   # 50% financing
+        PropertyType.FIRST_HOME: 0.75,
+        PropertyType.UPGRADE: 0.70,
+        PropertyType.INVESTMENT: 0.50,
     }
 
     @classmethod
@@ -74,71 +77,88 @@ class MortgageEligibilityEvaluator:
         down_payment_available: float,
         property_type: PropertyType = PropertyType.FIRST_HOME,
         risk_profile: RiskProfile = RiskProfile.STANDARD,
-        existing_loans_payment: float = 0,
+        existing_loans_payment: float = 0.0,
         years: int = 25,
+        monthly_payment_override: Optional[float] = None,
     ) -> MortgageEligibilityResult:
         """Evaluate mortgage eligibility based on Israeli standards."""
 
-        dti_limit = cls.DTI_LIMITS[risk_profile]
-        max_monthly_payment = (monthly_net_income * dti_limit) - existing_loans_payment
+        pti_cap = min(cls.PTI_LIMITS[risk_profile], cls.PTI_REGULATORY_LIMIT)
+        max_monthly_payment = max(
+            (monthly_net_income * pti_cap) - existing_loans_payment,
+            0.0,
+        )
 
         ltv_limit = cls.LTV_LIMITS[property_type]
         max_loan_by_ltv = property_price * ltv_limit
 
         avg_interest_rate = 0.04 / 12
-        months = years * 12
+        months = max(years, 1) * 12
 
         if avg_interest_rate > 0:
-            max_loan_by_payment = max_monthly_payment * (
-                (1 - (1 + avg_interest_rate) ** -months) / avg_interest_rate
-            )
+            annuity_factor = (
+                1 - (1 + avg_interest_rate) ** -months
+            ) / avg_interest_rate
+            max_loan_by_payment = max_monthly_payment * annuity_factor
         else:
             max_loan_by_payment = max_monthly_payment * months
 
         max_loan_amount = min(max_loan_by_payment, max_loan_by_ltv)
 
-        required_down_payment = property_price - max_loan_amount
+        required_down_payment = max(property_price - max_loan_amount, 0.0)
         is_eligible = down_payment_available >= required_down_payment
 
-        actual_loan_amount = property_price - down_payment_available
-        actual_monthly_payment = cls._calculate_monthly_payment(
-            actual_loan_amount, avg_interest_rate, months
+        actual_loan_amount = max(property_price - down_payment_available, 0.0)
+        if monthly_payment_override is not None:
+            actual_monthly_payment = max(monthly_payment_override, 0.0)
+        else:
+            actual_monthly_payment = cls._calculate_monthly_payment(
+                actual_loan_amount,
+                avg_interest_rate,
+                months,
+            )
+
+        disposable_income = max(monthly_net_income, 1.0)
+        actual_pti = (
+            actual_monthly_payment + max(existing_loans_payment, 0.0)
+        ) / disposable_income
+        actual_ltv = (
+            (actual_loan_amount / property_price) if property_price > 0 else 0.0
         )
-        actual_dti = (
-            (actual_monthly_payment + existing_loans_payment) / monthly_net_income
-            if monthly_net_income > 0
-            else 0.0
-        )
-        actual_ltv = actual_loan_amount / property_price if property_price > 0 else 0.0
 
         notes: list[str] = []
         if not is_eligible:
             shortfall = required_down_payment - down_payment_available
             if shortfall > 0:
-                notes.append(f"נדרש {shortfall:,.0f} ₪ הון עצמי נוסף")
-
-        if actual_dti > dti_limit:
+                notes.append(f"נדרש להוסיף הון עצמי נוסף של {shortfall:,.0f} ₪")
+        if actual_pti > pti_cap:
             notes.append(
-                f"יחס ההחזר החודשי ({actual_dti:.1%}) גבוה מהמגבלה ({dti_limit:.0%})"
+                f"תשלום חודשי של {actual_monthly_payment:,.0f} ₪ יוצר יחס החזר של {actual_pti:.1%}, גבוה מהמגבלה ({pti_cap:.0%})."
+            )
+        elif actual_pti > 0.40:
+            notes.append(
+                f"יחס ההחזר החודשי צפוי להיות {actual_pti:.1%}; שקלו כרית ביטחון או קיצור תקופת ההלוואה."
             )
 
         if actual_ltv > ltv_limit:
             notes.append(
-                f"יחס המימון ({actual_ltv:.0%}) גבוה מהמגבלה ({ltv_limit:.0%})"
+                f"חלק המימון ({actual_ltv:.0%}) חורג מהמגבלה ({ltv_limit:.0%})."
             )
 
         if is_eligible and not notes:
-            notes.append("הלקוח עומד בדרישות הבנק")
+            notes.append("הלקוח תואם את דרישות בנק ישראל לעומס החזר וליחס מימון.")
 
         return MortgageEligibilityResult(
             max_loan_amount=max_loan_amount,
             monthly_payment_capacity=max_monthly_payment,
             required_down_payment=required_down_payment,
-            debt_to_income_ratio=actual_dti,
+            debt_to_income_ratio=actual_pti,
             loan_to_value_ratio=actual_ltv,
             total_property_price=property_price,
             is_eligible=is_eligible,
             eligibility_notes=" | ".join(notes),
+            assessed_monthly_payment=actual_monthly_payment,
+            pti_limit_applied=pti_cap,
         )
 
     @staticmethod
@@ -164,7 +184,7 @@ class MortgageEligibilityEvaluator:
         property_price: float,
         down_payment_available: float,
         property_type: PropertyType = PropertyType.FIRST_HOME,
-        existing_loans_payment: float = 0,
+        existing_loans_payment: float = 0.0,
     ) -> Dict[str, float]:
         """Calculate the adjustments required to turn an ineligible case into an eligible one."""
 

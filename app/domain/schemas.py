@@ -272,3 +272,75 @@ class FeasibilityResult(BaseModel):
     pti_ratio: float
     pti_limit: float
     issues: List[FeasibilityIssue] = Field(default_factory=list)
+
+
+class TrackShares(BaseModel):
+    """Distribution of loan across track categories."""
+
+    fixed_unindexed: float
+    fixed_cpi: float
+    variable_prime: float
+    variable_cpi: float
+
+    def total(self) -> float:
+        return (
+            self.fixed_unindexed
+            + self.fixed_cpi
+            + self.variable_prime
+            + self.variable_cpi
+        )
+
+
+class UniformBasket(BaseModel):
+    """Representation of a BOI uniform basket benchmark."""
+
+    name: str
+    shares: TrackShares
+
+
+class TrackDetail(BaseModel):
+    """Describes a single track component within a mix."""
+
+    track: str
+    amount_nis: float
+    rate_display: str
+    indexation: str
+    reset_note: str
+
+
+class MixMetrics(BaseModel):
+    """Metrics describing payments and risk for a candidate mix."""
+
+    monthly_payment_nis: float
+    pti_ratio: float
+    pti_ratio_peak: float
+    total_interest_paid: float
+    max_payment_under_stress: float
+    average_rate_pct: float
+    expected_weighted_payment_nis: float
+    highest_expected_payment_nis: float
+    five_year_cost_nis: float
+    total_weighted_cost_nis: float
+    variable_share_pct: float
+    cpi_share_pct: float
+    ltv_ratio: float
+    prepayment_fee_exposure: str
+    track_details: List["TrackDetail"]
+
+
+class OptimizationCandidate(BaseModel):
+    """A single mix candidate produced by the optimizer."""
+
+    label: str
+    shares: TrackShares
+    metrics: MixMetrics
+    feasibility: FeasibilityResult | None = None
+    notes: List[str] = Field(default_factory=list)
+
+
+class OptimizationResult(BaseModel):
+    """Final optimizer output containing benchmarks and best-effort mix."""
+
+    candidates: List[OptimizationCandidate]
+    recommended_index: int
+    assumptions: Dict[str, Any] = Field(default_factory=dict)

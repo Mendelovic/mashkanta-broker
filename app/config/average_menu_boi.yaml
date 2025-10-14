@@ -1,0 +1,86 @@
+metadata:
+  as_of: "2025-10-13"
+  description: "BOI average mortgage menu - broker baseline anchors (Oct 2025)"
+  source_notes:
+    - "BOI policy rate 4.5% (Sep 29 2025) => Prime 6.0%"
+    - "BOI mortgage averages (linked/unlinked) Sep 10-11 2025 releases"
+    - "Market anchors: IL 5Y gov bond yield ~3.80% (Oct 13 2025)"
+    - "Industry ranges refresh Sep 1 2025"
+
+tracks:
+  prime:
+    canonical_type: variable_prime
+    baseline_midpoint_pct: 5.15
+    effective_rate_ranges_pct:
+      default:
+        "<=45": [5.00, 5.30]
+        "45-60": [5.00, 5.30]
+        "60-75": [5.00, 5.30]
+
+  variable_reset_unindexed:
+    canonical_type: variable_unlinked
+    baseline_midpoint_pct: 4.82
+    resets:
+      "5":
+        "<=45": [4.65, 4.95]
+        "45-60": [4.65, 4.95]
+        "60-75": [4.65, 5.05]
+      "7":
+        "<=45": [4.65, 4.95]
+        "45-60": [4.65, 4.95]
+        "60-75": [4.65, 5.05]
+      "10":
+        "<=45": [4.65, 4.95]
+        "45-60": [4.65, 4.95]
+        "60-75": [4.65, 5.05]
+
+  fixed_unindexed:
+    canonical_type: fixed_unindexed
+    baseline_midpoint_pct: 4.90
+    term_buckets:
+      "20-21":
+        "<=45": [4.70, 4.95]
+        "45-60": [4.80, 5.00]
+        "60-75": [4.90, 5.10]
+      "24-25":
+        "<=45": [4.70, 4.95]
+        "45-60": [4.80, 5.00]
+        "60-75": [4.90, 5.10]
+      "30":
+        "<=45": [4.70, 4.95]
+        "45-60": [4.80, 5.00]
+        "60-75": [4.90, 5.10]
+
+  variable_cpi:
+    canonical_type: variable_cpi
+    baseline_midpoint_pct: 3.05
+    resets:
+      "2":
+        "<=45": [2.85, 3.25]
+        "45-60": [2.85, 3.20]
+        "60-75": [2.85, 3.35]
+      "3":
+        "<=45": [2.85, 3.25]
+        "45-60": [2.85, 3.20]
+        "60-75": [2.85, 3.35]
+      "5":
+        "<=45": [2.85, 3.20]
+        "45-60": [2.85, 3.20]
+        "60-75": [2.85, 3.35]
+
+  fixed_cpi:
+    canonical_type: fixed_cpi
+    baseline_midpoint_pct: 3.02
+    term_buckets:
+      "14-15":
+        "<=45": [2.70, 2.85]
+        "45-60": [2.70, 3.00]
+        "60-75": [2.70, 3.00]
+      "20-21":
+        "<=45": [2.90, 3.15]
+        "45-60": [2.90, 3.00]
+        "60-75": [2.90, 3.30]
+      "24-25":
+        "<=45": [2.90, 3.15]
+        "45-60": [2.90, 3.30]
+        "60-75": [2.90, 3.30]
