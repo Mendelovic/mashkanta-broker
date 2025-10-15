@@ -1,5 +1,3 @@
-import json
-
 import pytest
 
 from app.domain.schemas import PlanningContext
@@ -12,11 +10,40 @@ def test_build_planning_context_creates_expected_weights():
     context = build_planning_context(submission)
 
     assert isinstance(context, PlanningContext)
-    assert 0.0 <= context.weights.payment_volatility <= 1.0
-    assert context.soft_caps.variable_share_max <= 0.66
+    total_weight = (
+        context.weights.payment_volatility
+        + context.weights.cpi_exposure
+        + context.weights.prepay_fee_exposure
+    )
+    assert pytest.approx(total_weight, rel=1e-6) == 1.0
+    assert pytest.approx(context.weights.payment_volatility, rel=1e-6) == pytest.approx(
+        0.3076923077, rel=1e-6
+    )
+    assert pytest.approx(context.weights.cpi_exposure, rel=1e-6) == pytest.approx(
+        0.3076923077, rel=1e-6
+    )
+    assert pytest.approx(
+        context.weights.prepay_fee_exposure, rel=1e-6
+    ) == pytest.approx(0.3846153846, rel=1e-6)
+    assert pytest.approx(context.soft_caps.variable_share_max, rel=1e-6) == 0.6
+    assert pytest.approx(context.soft_caps.cpi_share_max, rel=1e-6) == 0.6
+    assert context.soft_caps.payment_ceiling_nis == 6_500
     assert len(context.income_timeline) == 60
     assert len(context.pti_targets) == 60
     assert context.metadata["horizon_months"] == 60
+    assert (
+        pytest.approx(
+            context.metadata["assumptions"]["soft_caps"]["variable_share_max"], rel=1e-6
+        )
+        == 0.6
+    )
+    assert (
+        pytest.approx(
+            context.metadata["assumptions"]["soft_caps"]["cpi_share_max"], rel=1e-6
+        )
+        == 0.6
+    )
+    assert context.metadata["assumptions"]["soft_caps"]["payment_ceiling_nis"] == 6_500
 
 
 def test_build_planning_context_respects_prepayment_settings():
@@ -37,7 +64,11 @@ def test_build_planning_context_adjusts_for_future_plans():
     context = build_planning_context(submission)
 
     start_month = submission.record.future_plans[0].timeframe_months or 0
-    before = context.income_timeline[start_month - 1] if start_month > 0 else context.income_timeline[0]
+    before = (
+        context.income_timeline[start_month - 1]
+        if start_month > 0
+        else context.income_timeline[0]
+    )
     after = context.income_timeline[start_month]
 
     assert after < before

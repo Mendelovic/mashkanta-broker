@@ -1,4 +1,4 @@
-import json
+import pytest
 
 from app.services.deal_feasibility import run_feasibility_checks
 from app.domain.schemas import FeasibilityResult
@@ -45,3 +45,47 @@ def test_run_feasibility_flags_high_pti():
 
     assert not result.is_feasible
     assert any(issue.code == "pti_exceeds_limit" for issue in result.issues)
+
+
+def test_run_feasibility_warns_on_age_term_conflict():
+    result = run_feasibility_checks(
+        property_price=1_500_000,
+        down_payment_available=600_000,
+        monthly_net_income=25_000,
+        existing_monthly_loans=0,
+        loan_years=30,
+        property_type="single",
+        borrower_age_years=60,
+    )
+
+    assert any(issue.code == "age_term_beyond_retirement" for issue in result.issues)
+
+
+def test_ltv_limit_respects_deal_type_over_property_type():
+    result = run_feasibility_checks(
+        property_price=1_200_000,
+        down_payment_available=300_000,
+        monthly_net_income=22_000,
+        existing_monthly_loans=0,
+        loan_years=25,
+        property_type="investment",
+        deal_type="first_home",
+        occupancy="own",
+    )
+
+    assert result.ltv_limit == pytest.approx(0.75)
+    assert result.is_feasible
+
+
+def test_pti_ratio_uses_assessed_payment_override():
+    result = run_feasibility_checks(
+        property_price=1_100_000,
+        down_payment_available=400_000,
+        monthly_net_income=15_000,
+        existing_monthly_loans=0,
+        loan_years=25,
+        property_type="single",
+        assessed_payment=5_000,
+    )
+
+    assert result.pti_ratio == pytest.approx(5_000 / 15_000)

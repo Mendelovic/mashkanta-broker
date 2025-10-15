@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.domain.schemas import (
     BorrowerProfile,
+    DealType,
     FuturePlan,
     IntakeSubmission,
     InterviewRecord,
@@ -28,6 +29,8 @@ def build_submission() -> IntakeSubmission:
         fixed_expenses_nis=2_000,
         additional_income_nis=1_500,
         employment_status="מועסק קבוע",
+        employment_tenure_months=60,
+        has_recent_credit_issues=False,
         age_years=34,
         dependents=0,
         income_volatility_factor=0.2,
@@ -91,6 +94,7 @@ def build_submission() -> IntakeSubmission:
     record = InterviewRecord(
         borrower=borrower,
         property=property_details,
+        deal_type=DealType.FIRST_HOME,
         loan=loan,
         preferences=preferences,
         future_plans=plans,
