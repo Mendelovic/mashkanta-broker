@@ -21,6 +21,9 @@ def check_deal_feasibility(
     existing_monthly_loans: float = 0.0,
     loan_years: int = 25,
     property_type: str = PropertyType.FIRST_HOME.value,
+    deal_type: str | None = None,
+    occupancy: str | None = None,
+    borrower_age_years: int | None = None,
 ) -> str:
     """Run a quick LTV/PTI feasibility check before continuing the full intake."""
 
@@ -31,6 +34,9 @@ def check_deal_feasibility(
         existing_monthly_loans=existing_monthly_loans,
         loan_years=loan_years,
         property_type=property_type,
+        deal_type=deal_type,
+        occupancy=occupancy,
+        borrower_age_years=borrower_age_years,
     )
 
     logger.info(

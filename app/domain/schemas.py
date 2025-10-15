@@ -6,7 +6,7 @@ from datetime import date
 from enum import Enum
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, PositiveFloat
+from pydantic import BaseModel, Field, PositiveFloat, model_validator
 
 
 AgeRange = Annotated[int, Field(ge=18, le=85)]
@@ -51,6 +51,13 @@ class PropertyType(str, Enum):
     INVESTMENT = "investment"
 
 
+DEAL_TO_PROPERTY_MAP: Dict["DealType", PropertyType] = {
+    DealType.FIRST_HOME: PropertyType.SINGLE,
+    DealType.REPLACEMENT: PropertyType.REPLACEMENT,
+    DealType.INVESTMENT: PropertyType.INVESTMENT,
+}
+
+
 class RateAnchor(str, Enum):
     """Reference anchors used for quoted tracks."""
 
@@ -84,8 +91,18 @@ class BorrowerProfile(BaseModel):
         description="Monthly fixed obligations counted in PTI (loans >18m, alimony, rent if not occupying).",
     )
     additional_income_nis: float = Field(default=0.0, ge=0.0)
-    employment_status: Optional[str] = Field(
-        default=None, description="e.g., salaried, self-employed, public sector"
+    employment_status: str = Field(
+        ..., description="e.g., salaried, self-employed, public sector"
+    )
+    employment_tenure_months: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=600,
+        description="Approximate number of months in current role.",
+    )
+    has_recent_credit_issues: bool = Field(
+        ...,
+        description="True if the borrower reports recent credit flags (returned debit, collections, etc.).",
     )
     age_years: Optional[AgeRange] = None
     dependents: Optional[SmallIntRange] = None
@@ -94,6 +111,14 @@ class BorrowerProfile(BaseModel):
         description="0=stable, 1=highly volatile. Used to buffer payment stress.",
     )
     notes: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _validate_employment_fields(self) -> "BorrowerProfile":
+        if self.employment_tenure_months is None:
+            raise ValueError(
+                "employment_tenure_months must be provided for borrower profile."
+            )
+        return self
 
 
 class PropertyDetails(BaseModel):
@@ -137,12 +162,20 @@ class Preferences(BaseModel):
     stability_vs_cost: SliderInt
     cpi_tolerance: SliderInt
     prime_exposure_preference: SliderInt
-    max_payment_nis: Optional[PositiveFloat] = None
-    red_line_payment_nis: Optional[PositiveFloat] = None
+    max_payment_nis: PositiveFloat
+    red_line_payment_nis: PositiveFloat
     expected_prepay_pct: float = Field(default=0.0, ge=0.0, le=1.0)
     expected_prepay_month: Optional[PrepayMonth] = None
     rate_view: RateView = RateView.FLAT
     additional_signals: List[PreferenceSignal] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_payment_targets(self) -> "Preferences":
+        if self.red_line_payment_nis < self.max_payment_nis:
+            raise ValueError(
+                "red_line_payment_nis must be greater than or equal to max_payment_nis"
+            )
+        return self
 
 
 class FuturePlan(BaseModel):
@@ -193,6 +226,7 @@ class InterviewRecord(BaseModel):
 
     borrower: BorrowerProfile
     property: PropertyDetails
+    deal_type: DealType = DealType.FIRST_HOME
     loan: LoanAsk
     preferences: Preferences
     future_plans: List[FuturePlan] = Field(default_factory=list)
@@ -200,6 +234,40 @@ class InterviewRecord(BaseModel):
     interview_summary: Optional[str] = Field(
         default=None, description="Teach-back paragraph confirmed with the borrower."
     )
+
+    @model_validator(mode="after")
+    def _align_deal_type(self) -> "InterviewRecord":
+        fields_set = getattr(self, "model_fields_set", set())
+        occupancy = self.borrower.occupancy
+        current_usage = self.property.type
+
+        def infer_deal() -> DealType:
+            if current_usage == PropertyType.REPLACEMENT:
+                return DealType.REPLACEMENT
+            if occupancy == OccupancyIntent.RENT:
+                return DealType.INVESTMENT
+            if (
+                current_usage == PropertyType.INVESTMENT
+                and occupancy == OccupancyIntent.OWN
+            ):
+                return DealType.FIRST_HOME
+            if current_usage == PropertyType.INVESTMENT:
+                return DealType.INVESTMENT
+            return DealType.FIRST_HOME
+
+        if "deal_type" not in fields_set:
+            self.deal_type = infer_deal()
+
+        if occupancy == OccupancyIntent.OWN and self.deal_type == DealType.INVESTMENT:
+            raise ValueError("Owner-occupied deals cannot be classified as investment.")
+        if occupancy == OccupancyIntent.RENT and self.deal_type == DealType.FIRST_HOME:
+            raise ValueError("Deals marked as first_home must be owner-occupied.")
+
+        enforced_usage = DEAL_TO_PROPERTY_MAP.get(self.deal_type, PropertyType.SINGLE)
+        if self.property.type != enforced_usage:
+            self.property = self.property.model_copy(update={"type": enforced_usage})
+
+        return self
 
 
 class IntakeSubmission(BaseModel):
@@ -271,6 +339,7 @@ class FeasibilityResult(BaseModel):
     ltv_limit: float
     pti_ratio: float
     pti_limit: float
+    pti_ratio_peak: Optional[float] = None
     issues: List[FeasibilityIssue] = Field(default_factory=list)
 
 
@@ -306,6 +375,14 @@ class TrackDetail(BaseModel):
     rate_display: str
     indexation: str
     reset_note: str
+    anchor_rate_pct: Optional[float] = None
+
+
+class PaymentSensitivity(BaseModel):
+    """Represents payment under a simple shock scenario."""
+
+    scenario: str
+    payment_nis: float
 
 
 class MixMetrics(BaseModel):
@@ -319,6 +396,10 @@ class MixMetrics(BaseModel):
     average_rate_pct: float
     expected_weighted_payment_nis: float
     highest_expected_payment_nis: float
+    highest_expected_payment_note: Optional[str] = Field(
+        default=None,
+        description="Explanation of the highest expected payment disclosure.",
+    )
     five_year_cost_nis: float
     total_weighted_cost_nis: float
     variable_share_pct: float
@@ -326,6 +407,7 @@ class MixMetrics(BaseModel):
     ltv_ratio: float
     prepayment_fee_exposure: str
     track_details: List["TrackDetail"]
+    payment_sensitivity: List["PaymentSensitivity"]
 
 
 class OptimizationCandidate(BaseModel):

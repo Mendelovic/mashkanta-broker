@@ -24,9 +24,19 @@ def _clamp(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
 
 def _compute_weights(submission: IntakeSubmission) -> PreferenceWeights:
     prefs = submission.record.preferences
+
     stability_weight = _clamp(prefs.stability_vs_cost / 10.0)
     cpi_weight = _clamp((10 - prefs.cpi_tolerance) / 10.0)
     prepay_weight = _clamp((10 - prefs.prime_exposure_preference) / 10.0)
+
+    total = stability_weight + cpi_weight + prepay_weight
+    if total <= 1e-6:
+        stability_weight = cpi_weight = prepay_weight = 1.0 / 3.0
+    else:
+        stability_weight /= total
+        cpi_weight /= total
+        prepay_weight /= total
+
     return PreferenceWeights(
         payment_volatility=stability_weight,
         cpi_exposure=cpi_weight,
@@ -37,21 +47,16 @@ def _compute_weights(submission: IntakeSubmission) -> PreferenceWeights:
 def _compute_soft_caps(submission: IntakeSubmission) -> SoftCaps:
     prefs = submission.record.preferences
 
-    if prefs.stability_vs_cost >= 8:
-        variable_cap = 0.5
-    elif prefs.stability_vs_cost <= 3:
-        variable_cap = 0.66
-    else:
-        variable_cap = 0.6
+    variable_cap = _clamp(1.0 - prefs.stability_vs_cost / 10.0, 0.3, 0.66)
+    cpi_cap = _clamp(prefs.cpi_tolerance / 10.0, 0.2, 1.0)
 
-    if prefs.cpi_tolerance <= 2:
-        cpi_cap = 0.2
-    elif prefs.cpi_tolerance <= 5:
-        cpi_cap = 0.5
-    else:
-        cpi_cap = 1.0
-
-    payment_ceiling = prefs.max_payment_nis or prefs.red_line_payment_nis
+    payment_ceiling = prefs.max_payment_nis
+    if prefs.red_line_payment_nis:
+        payment_ceiling = (
+            min(payment_ceiling, prefs.red_line_payment_nis)
+            if payment_ceiling
+            else prefs.red_line_payment_nis
+        )
 
     return SoftCaps(
         variable_share_max=variable_cap,
@@ -145,6 +150,11 @@ def build_planning_context(submission: IntakeSubmission) -> PlanningContext:
         "assumptions": {
             "baseline_income": baseline_income,
             "baseline_expense": baseline_expense,
+            "soft_caps": {
+                "variable_share_max": soft_caps.variable_share_max,
+                "cpi_share_max": soft_caps.cpi_share_max,
+                "payment_ceiling_nis": soft_caps.payment_ceiling_nis,
+            },
         },
     }
 

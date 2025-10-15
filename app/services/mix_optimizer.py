@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from app.configuration.menu_loader import load_average_menu_rates
 from app.domain.schemas import (
@@ -14,6 +14,7 @@ from app.domain.schemas import (
     RateAnchor,
     TrackShares,
     TrackDetail,
+    PaymentSensitivity,
     UniformBasket,
 )
 from app.services.deal_feasibility import run_feasibility_checks
@@ -57,7 +58,12 @@ def _build_track_details(
     details: List[TrackDetail] = []
 
     def add_detail(
-        track: str, share: float, rate_display: str, indexation: str, reset_note: str
+        track: str,
+        share: float,
+        rate_display: str,
+        indexation: str,
+        reset_note: str,
+        anchor_rate_pct: float | None = None,
     ) -> None:
         if share <= 0:
             return
@@ -69,6 +75,7 @@ def _build_track_details(
                 rate_display=rate_display,
                 indexation=indexation,
                 reset_note=reset_note,
+                anchor_rate_pct=anchor_rate_pct,
             )
         )
 
@@ -81,6 +88,7 @@ def _build_track_details(
             _format_margin("P", margin),
             "none",
             "Prime-linked (monthly updates)",
+            BASE_ANCHOR_RATES[RateAnchor.PRIME] * 100,
         )
 
     fixed_unlinked_rate = rate_table.get("fixed_unindexed")
@@ -101,17 +109,7 @@ def _build_track_details(
             f"{fixed_cpi_rate * 100:.2f}%",
             "cpi",
             "Fixed CPI-indexed",
-        )
-
-    variable_unlinked_rate = rate_table.get("variable_unindexed")
-    if variable_unlinked_rate is not None:
-        margin = variable_unlinked_rate - BASE_ANCHOR_RATES[RateAnchor.GOV_5Y]
-        add_detail(
-            "variable_unindexed",
-            getattr(shares, "variable_unindexed", 0.0),
-            _format_margin("Gov5y", margin),
-            "none",
-            "Resets every 5 years",
+            None,
         )
 
     variable_cpi_rate = rate_table.get("variable_cpi")
@@ -123,6 +121,7 @@ def _build_track_details(
             _format_margin("Gov5y", margin),
             "cpi",
             "CPI-linked reset every 5 years",
+            BASE_ANCHOR_RATES[RateAnchor.GOV_5Y] * 100,
         )
 
     return details
@@ -142,7 +141,12 @@ _SCENARIO_RATE_SHOCKS: Dict[str, float] = {
     "rise": 0.02,
 }
 
-_STRESS_RATE_SHOCK: float = 0.03
+SENSITIVITY_SHOCKS: List[Tuple[str, Dict[str, float]]] = [
+    ("prime_+1pct", {"variable_prime": 0.01}),
+    ("prime_+2pct", {"variable_prime": 0.02}),
+    ("prime_+3pct", {"variable_prime": 0.03}),
+    ("cpi_path_+2pct", {"fixed_cpi": 0.02, "variable_cpi": 0.02}),
+]
 
 _UNIFORM_BASKETS: List[UniformBasket] = [
     UniformBasket(
@@ -248,10 +252,86 @@ def _simulate_total_interest(
     return total_interest
 
 
+def _mix_payment(
+    loan_amount: float,
+    term_years: int,
+    shares: TrackShares,
+    rate_table: Dict[str, float],
+    adjustments: Dict[str, float] | None = None,
+) -> Tuple[float, Dict[str, float]]:
+    adjustments = adjustments or {}
+    payments: Dict[str, float] = {}
+    total_payment = 0.0
+
+    for track_key, share in (
+        ("fixed_unindexed", shares.fixed_unindexed),
+        ("fixed_cpi", shares.fixed_cpi),
+        ("variable_prime", shares.variable_prime),
+        ("variable_cpi", shares.variable_cpi),
+    ):
+        if share <= 0:
+            continue
+        amount = loan_amount * share
+        base_rate = rate_table.get(track_key, DEFAULT_TRACK_RATES.get(track_key, 0.0))
+        rate_delta = adjustments.get(track_key, 0.0)
+        payment = _calculate_monthly_payment(
+            amount, term_years, max(base_rate + rate_delta, 0.0)
+        )
+        payments[track_key] = payment
+        total_payment += payment
+
+    return total_payment, payments
+
+
+def _floating_rate_adjustments(shock: float) -> Dict[str, float]:
+    if abs(shock) <= 1e-9:
+        return {}
+    adjustments = {
+        "variable_prime": shock,
+        "variable_cpi": shock,
+    }
+    adjustments["fixed_cpi"] = shock
+    return adjustments
+
+
+def _soft_cap_notes(
+    planning: PlanningContext, shares: TrackShares, metrics: MixMetrics
+) -> List[str]:
+    notes: List[str] = []
+    caps = planning.soft_caps
+
+    variable_share = shares.variable_prime + shares.variable_cpi
+    if variable_share > caps.variable_share_max + 1e-6:
+        notes.append(
+            f"Variable exposure {variable_share * 100:.1f}% exceeds comfort cap {caps.variable_share_max * 100:.0f}%."
+        )
+
+    cpi_share = shares.fixed_cpi + shares.variable_cpi
+    if cpi_share > caps.cpi_share_max + 1e-6:
+        notes.append(
+            f"CPI exposure {cpi_share * 100:.1f}% exceeds comfort cap {caps.cpi_share_max * 100:.0f}%."
+        )
+
+    payment_ceiling = caps.payment_ceiling_nis
+    if (
+        payment_ceiling is not None
+        and metrics.highest_expected_payment_nis > payment_ceiling + 1e-6
+    ):
+        notes.append(
+            "Highest expected payment ₪{peak:,.0f} exceeds comfort ceiling ₪{ceiling:,.0f}.".format(
+                peak=metrics.highest_expected_payment_nis,
+                ceiling=payment_ceiling,
+            )
+        )
+
+    return notes
+
+
 def _compute_metrics(
     loan_amount: float,
     term_years: int,
     net_income: float,
+    existing_obligations: float,
     property_value: float,
     planning: PlanningContext,
     shares: TrackShares,
@@ -265,11 +345,12 @@ def _compute_metrics(
         + rate_table.get("variable_cpi", 0.038) * shares.variable_cpi
     ) / total_share
 
-    monthly_payment = _calculate_monthly_payment(loan_amount, term_years, avg_rate)
-    base_pti = monthly_payment / max(net_income, 1.0)
-
-    stress_rate = max(avg_rate + _STRESS_RATE_SHOCK, 0.0)
-    stress_payment = _calculate_monthly_payment(loan_amount, term_years, stress_rate)
+    monthly_payment, _ = _mix_payment(
+        loan_amount, term_years, shares, rate_table, adjustments=None
+    )
+    obligations = max(existing_obligations, 0.0)
+    income = max(net_income, 1.0)
+    base_pti = (monthly_payment + obligations) / income
 
     scenario_weights = {}
     weights_model = getattr(planning, "scenario_weights", None)
@@ -284,10 +365,11 @@ def _compute_metrics(
 
     scenario_payments: Dict[str, float] = {}
     for name, shock in _SCENARIO_RATE_SHOCKS.items():
-        rate = max(avg_rate + shock, 0.0)
-        scenario_payments[name] = _calculate_monthly_payment(
-            loan_amount, term_years, rate
+        adjustments = _floating_rate_adjustments(shock)
+        payment, _ = _mix_payment(
+            loan_amount, term_years, shares, rate_table, adjustments
         )
+        scenario_payments[name] = payment
 
     total_weight = sum(scenario_weights.values())
     if total_weight > 0:
@@ -301,12 +383,33 @@ def _compute_metrics(
     else:
         expected_weighted_payment = monthly_payment
 
-    highest_expected_payment = max(
-        [monthly_payment, stress_payment, *scenario_payments.values()]
+    sensitivity_entries: List[PaymentSensitivity] = []
+    sensitivity_payments: Dict[str, float] = {}
+    for label, adjustments in SENSITIVITY_SHOCKS:
+        payment, _ = _mix_payment(
+            loan_amount, term_years, shares, rate_table, adjustments
+        )
+        sensitivity_entries.append(
+            PaymentSensitivity(
+                scenario=label,
+                payment_nis=payment,
+            )
+        )
+        sensitivity_payments[label] = payment
+
+    stress_payment = (
+        max([monthly_payment, *sensitivity_payments.values()])
+        if sensitivity_payments
+        else monthly_payment
     )
 
+    highest_expected_payment = max(
+        [monthly_payment, *scenario_payments.values(), *sensitivity_payments.values()]
+    )
+    highest_expected_payment_note = "Highest expected payment assumes regulator stress path (CPI +2% path or Prime +3%)."
+
     months = max(term_years * 12, 1)
-    peak_pti = highest_expected_payment / max(net_income, 1.0)
+    peak_pti = (highest_expected_payment + obligations) / income
     variable_share_pct = (shares.variable_prime + shares.variable_cpi) * 100
     cpi_share_pct = (shares.fixed_cpi + shares.variable_cpi) * 100
     ltv_ratio = (loan_amount / property_value) if property_value > 0 else 0.0
@@ -334,6 +437,7 @@ def _compute_metrics(
         average_rate_pct=avg_rate * 100,
         expected_weighted_payment_nis=expected_weighted_payment,
         highest_expected_payment_nis=highest_expected_payment,
+        highest_expected_payment_note=highest_expected_payment_note,
         five_year_cost_nis=five_year_cost,
         total_weighted_cost_nis=total_weighted_cost,
         variable_share_pct=variable_share_pct,
@@ -341,6 +445,7 @@ def _compute_metrics(
         ltv_ratio=ltv_ratio,
         prepayment_fee_exposure=prepayment_exposure,
         track_details=track_details,
+        payment_sensitivity=sensitivity_entries,
     )
 
 
@@ -385,7 +490,14 @@ def _build_recommended_candidate(
     )
 
     metrics = _compute_metrics(
-        loan_amount, term_years, income, property_value, planning, shares, rate_table
+        loan_amount,
+        term_years,
+        income,
+        existing_loans,
+        property_value,
+        planning,
+        shares,
+        rate_table,
     )
     feasibility = run_feasibility_checks(
         property_price=interview.property.value_nis,
@@ -394,11 +506,17 @@ def _build_recommended_candidate(
         existing_monthly_loans=existing_loans,
         loan_years=term_years,
         property_type=interview.property.type.value,
+        deal_type=interview.deal_type.value,
+        occupancy=interview.borrower.occupancy.value,
+        assessed_payment=metrics.monthly_payment_nis,
+        peak_payment=metrics.highest_expected_payment_nis,
+        borrower_age_years=interview.borrower.age_years,
     )
 
     notes: List[str] = []
     if feasibility.issues:
         notes.append("Mix requires adjustments to meet BOI limits.")
+    notes.extend(_soft_cap_notes(planning, shares, metrics))
 
     return OptimizationCandidate(
         label="Customized mix",
@@ -428,6 +546,7 @@ def optimize_mixes(
             loan_amount,
             term_years,
             net_income,
+            fixed_expenses,
             property_value,
             planning,
             basket.shares,
@@ -440,14 +559,22 @@ def optimize_mixes(
             existing_monthly_loans=fixed_expenses,
             loan_years=term_years,
             property_type=interview.property.type.value,
+            deal_type=interview.deal_type.value,
+            occupancy=interview.borrower.occupancy.value,
+            assessed_payment=metrics.monthly_payment_nis,
+            peak_payment=metrics.highest_expected_payment_nis,
+            borrower_age_years=interview.borrower.age_years,
         )
+        notes = _soft_cap_notes(planning, basket.shares, metrics)
+        if feasibility.issues:
+            notes.append("Mix requires adjustments to meet BOI limits.")
         candidates.append(
             OptimizationCandidate(
                 label=basket.name,
                 shares=basket.shares,
                 metrics=metrics,
                 feasibility=feasibility,
-                notes=[],
+                notes=notes,
             )
         )
 
