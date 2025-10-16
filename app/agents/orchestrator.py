@@ -82,7 +82,7 @@ def create_mortgage_broker_orchestrator() -> Agent:
             name="סוכן משכנתאות בכיר",
             instructions=HEBREW_MORTGAGE_BROKER_INSTRUCTIONS,
             model="gpt-5",
-            model_settings=ModelSettings(reasoning=Reasoning(effort="low")),
+            model_settings=ModelSettings(reasoning=Reasoning(effort="medium")),
             tools=[
                 check_deal_feasibility,
                 submit_intake_record,

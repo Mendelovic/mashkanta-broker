@@ -76,3 +76,5 @@ celerybeat-schedule
 
 # VS Code settings
 .vscode/
+
+md-files/
