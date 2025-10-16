@@ -1,5 +1,5 @@
 import json
-from typing import Callable
+from typing import Callable, Iterator
 
 import pytest
 from agents.tool_context import ToolContext
@@ -38,7 +38,7 @@ def create_tool_context(session_id: str, arguments: str) -> ToolContext[ChatRunC
 
 
 @pytest.fixture
-def cleanup_sessions() -> Callable[[str], None]:
+def cleanup_sessions() -> Iterator[Callable[[str], None]]:
     created: list[str] = []
 
     def _register(session_id: str) -> None:
@@ -50,7 +50,9 @@ def cleanup_sessions() -> Callable[[str], None]:
         session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
 
 
-def test_input_guardrail_blocks_when_no_intake(cleanup_sessions: Callable[[str], None]) -> None:
+def test_input_guardrail_blocks_when_no_intake(
+    cleanup_sessions: Callable[[str], None],
+) -> None:
     session_id = "guardrail-no-intake"
     cleanup_sessions(session_id)
     session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
@@ -73,7 +75,9 @@ def test_input_guardrail_blocks_when_no_intake(cleanup_sessions: Callable[[str],
     assert NO_INTAKE_SNIPPET in guard_output.behavior["message"]
 
 
-def test_input_guardrail_allows_with_confirmed_intake(cleanup_sessions: Callable[[str], None]) -> None:
+def test_input_guardrail_allows_with_confirmed_intake(
+    cleanup_sessions: Callable[[str], None],
+) -> None:
     session_id = "guardrail-valid-intake"
     cleanup_sessions(session_id)
     session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
@@ -100,7 +104,9 @@ def test_input_guardrail_allows_with_confirmed_intake(cleanup_sessions: Callable
     assert guard_output.behavior["type"] == "allow"
 
 
-def test_planning_guardrail_blocks_without_context(cleanup_sessions: Callable[[str], None]) -> None:
+def test_planning_guardrail_blocks_without_context(
+    cleanup_sessions: Callable[[str], None],
+) -> None:
     session_id = "guardrail-no-planning"
     cleanup_sessions(session_id)
     session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
@@ -117,7 +123,9 @@ def test_planning_guardrail_blocks_without_context(cleanup_sessions: Callable[[s
     assert NO_PLANNING_SNIPPET in guard_output.behavior["message"]
 
 
-def test_planning_guardrail_allows_with_context(cleanup_sessions: Callable[[str], None]) -> None:
+def test_planning_guardrail_allows_with_context(
+    cleanup_sessions: Callable[[str], None],
+) -> None:
     session_id = "guardrail-with-planning"
     cleanup_sessions(session_id)
     session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
@@ -135,7 +143,9 @@ def test_planning_guardrail_allows_with_context(cleanup_sessions: Callable[[str]
     assert guard_output.behavior["type"] == "allow"
 
 
-def test_optimization_guardrail_blocks_without_result(cleanup_sessions: Callable[[str], None]) -> None:
+def test_optimization_guardrail_blocks_without_result(
+    cleanup_sessions: Callable[[str], None],
+) -> None:
     session_id = "guardrail-no-optimization"
     cleanup_sessions(session_id)
     session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
@@ -152,7 +162,9 @@ def test_optimization_guardrail_blocks_without_result(cleanup_sessions: Callable
     assert guard_output.behavior["type"] == "reject_content"
 
 
-def test_optimization_guardrail_allows_with_result(cleanup_sessions: Callable[[str], None]) -> None:
+def test_optimization_guardrail_allows_with_result(
+    cleanup_sessions: Callable[[str], None],
+) -> None:
     session_id = "guardrail-with-optimization"
     cleanup_sessions(session_id)
     session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
@@ -164,9 +176,7 @@ def test_optimization_guardrail_allows_with_result(cleanup_sessions: Callable[[s
 
     from app.services.mix_optimizer import optimize_mixes
 
-    session.set_optimization_result(
-        optimize_mixes(submission.record, planning_context)
-    )
+    session.set_optimization_result(optimize_mixes(submission.record, planning_context))
 
     tool_ctx = create_tool_context(session_id, "{}")
     guard_output = optimization_required_guardrail.guardrail_function(
@@ -176,7 +186,9 @@ def test_optimization_guardrail_allows_with_result(cleanup_sessions: Callable[[s
     assert guard_output.behavior["type"] == "allow"
 
 
-def test_output_guardrail_rejects_on_violation(cleanup_sessions: Callable[[str], None]) -> None:
+def test_output_guardrail_rejects_on_violation(
+    cleanup_sessions: Callable[[str], None],
+) -> None:
     session_id = "guardrail-violation"
     cleanup_sessions(session_id)
     session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
@@ -198,13 +210,19 @@ def test_output_guardrail_rejects_on_violation(cleanup_sessions: Callable[[str],
     )
     tool_ctx = create_tool_context(session_id, arguments)
 
-    assert intake_required_guardrail.guardrail_function(
-        ToolInputGuardrailData(context=tool_ctx, agent=None)
-    ).behavior["type"] == "allow"
+    assert (
+        intake_required_guardrail.guardrail_function(
+            ToolInputGuardrailData(context=tool_ctx, agent=None)
+        ).behavior["type"]
+        == "allow"
+    )
 
-    assert planning_required_guardrail.guardrail_function(
-        ToolInputGuardrailData(context=tool_ctx, agent=None)
-    ).behavior["type"] == "allow"
+    assert (
+        planning_required_guardrail.guardrail_function(
+            ToolInputGuardrailData(context=tool_ctx, agent=None)
+        ).behavior["type"]
+        == "allow"
+    )
 
     calc = MortgageEligibilityEvaluator.evaluate(
         monthly_net_income=8_000,
@@ -239,7 +257,9 @@ def test_output_guardrail_rejects_on_violation(cleanup_sessions: Callable[[str],
             "limits": {
                 "pti_limit": calc.pti_limit_applied,
                 "dti_limit": calc.pti_limit_applied,
-                "ltv_limit": MortgageEligibilityEvaluator.LTV_LIMITS[PropertyType.FIRST_HOME],
+                "ltv_limit": MortgageEligibilityEvaluator.LTV_LIMITS[
+                    PropertyType.FIRST_HOME
+                ],
             },
         },
         "improvement_options": [],

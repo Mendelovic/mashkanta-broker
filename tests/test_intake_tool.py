@@ -1,6 +1,5 @@
-import asyncio
 import json
-from typing import Callable
+from typing import Callable, Iterator
 
 import pytest
 from agents.tool_context import ToolContext
@@ -10,10 +9,11 @@ from app.models.context import ChatRunContext
 from app.services import session_manager
 
 from .factories import build_submission
+from .async_utils import run_async
 
 
 @pytest.fixture
-def cleanup_session() -> Callable[[str], None]:
+def cleanup_session() -> Iterator[Callable[[str], None]]:
     created_ids: list[str] = []
 
     def _register(session_id: str) -> None:
@@ -22,7 +22,7 @@ def cleanup_session() -> Callable[[str], None]:
     yield _register
 
     for session_id in created_ids:
-        session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
+        session_manager._session_cache.pop(session_id, None)
 
 
 def create_tool_context(session_id: str, payload: str) -> ToolContext[ChatRunContext]:
@@ -34,7 +34,9 @@ def create_tool_context(session_id: str, payload: str) -> ToolContext[ChatRunCon
     )
 
 
-def test_submit_intake_record_persists_revision(cleanup_session: Callable[[str], None]) -> None:
+def test_submit_intake_record_persists_revision(
+    cleanup_session: Callable[[str], None],
+) -> None:
     session_id = "test-intake-session"
     cleanup_session(session_id)
     session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
@@ -44,7 +46,7 @@ def test_submit_intake_record_persists_revision(cleanup_session: Callable[[str],
     arguments = json.dumps({"submission": submission.model_dump()})
     tool_ctx = create_tool_context(session_id, arguments)
 
-    result_json = asyncio.run(submit_intake_record.on_invoke_tool(tool_ctx, arguments))
+    result_json = run_async(submit_intake_record.on_invoke_tool(tool_ctx, arguments))
     result = json.loads(result_json)
 
     assert result["version"] == 1
@@ -65,5 +67,5 @@ def test_submit_intake_record_requires_existing_session() -> None:
     arguments = json.dumps({"submission": submission.model_dump()})
     tool_ctx = create_tool_context(session_id, arguments)
 
-    result = asyncio.run(submit_intake_record.on_invoke_tool(tool_ctx, arguments))
+    result = run_async(submit_intake_record.on_invoke_tool(tool_ctx, arguments))
     assert result.startswith("ERROR: session missing-session not found.")

@@ -1,4 +1,3 @@
-import asyncio
 import json
 import pytest
 
@@ -6,6 +5,7 @@ from agents.tool_context import ToolContext
 
 from app.agents.tools.feasibility_tool import check_deal_feasibility
 from app.models.context import ChatRunContext
+from .async_utils import run_async
 
 
 def run_tool(payload: dict) -> dict:
@@ -16,7 +16,7 @@ def run_tool(payload: dict) -> dict:
         tool_call_id="feasibility-tool",
         tool_arguments=arguments,
     )
-    output = asyncio.run(check_deal_feasibility.on_invoke_tool(ctx, arguments))
+    output = run_async(check_deal_feasibility.on_invoke_tool(ctx, arguments))
     return json.loads(output)
 
 
@@ -31,6 +31,7 @@ def test_check_deal_feasibility_returns_json():
     }
     data = run_tool(payload)
     assert data["is_feasible"] is True
+    assert data["loan_term_limit_years"] == 30
 
 
 def test_check_deal_feasibility_flags_issue():

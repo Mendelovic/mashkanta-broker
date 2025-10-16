@@ -8,22 +8,36 @@ from tests.factories import build_submission
 def test_optimize_mixes_creates_candidates():
     submission = build_submission()
     planning = build_planning_context(submission)
+    term_years = submission.record.loan.term_years
 
     result = optimize_mixes(submission.record, planning)
 
     assert result.candidates
     assert result.recommended_index < len(result.candidates)
+    assert result.engine_recommended_index is not None
+    assert result.advisor_recommended_index is not None
+    assert result.recommended_index == result.advisor_recommended_index
 
     recommended = result.candidates[result.recommended_index]
     metrics = recommended.metrics
     assert metrics.pti_ratio_peak >= metrics.pti_ratio
     assert metrics.variable_share_pct >= 0
     assert metrics.track_details
+    assert metrics.five_year_total_payment_nis > 0
+    assert metrics.peak_payment_driver is not None
     assert recommended.feasibility is not None
     assert recommended.feasibility.pti_ratio == pytest.approx(metrics.pti_ratio)
     assert recommended.feasibility.pti_ratio_peak == pytest.approx(
         metrics.pti_ratio_peak
     )
+    assert recommended.feasibility.variable_share_limit_pct is not None
+    assert recommended.feasibility.loan_term_limit_years == 30
+    assert result.term_sweep
+    sweep_terms = {entry.term_years for entry in result.term_sweep}
+    assert term_years in sweep_terms
+    assert any(term in sweep_terms for term in (15, 20, 25))
+    assert "anchor_rates_pct" in result.assumptions
+    assert "rate_table_snapshot_pct" in result.assumptions
 
 
 @pytest.mark.parametrize("basket_index", [0, 1, 2])

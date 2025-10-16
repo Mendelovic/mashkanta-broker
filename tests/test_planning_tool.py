@@ -1,6 +1,5 @@
-import asyncio
 import json
-from typing import Callable
+from typing import Callable, Iterator
 
 import pytest
 from agents.tool_context import ToolContext
@@ -10,10 +9,11 @@ from app.agents.tools.planning_tool import compute_planning_context
 from app.models.context import ChatRunContext
 from app.services import session_manager
 from tests.factories import build_submission
+from tests.async_utils import run_async
 
 
 @pytest.fixture
-def session_factory() -> Callable[[str], None]:
+def session_factory() -> Iterator[Callable[[str], None]]:
     created: list[str] = []
 
     def _prepare(session_id: str) -> None:
@@ -44,27 +44,31 @@ def create_planning_context(session_id: str) -> ToolContext[ChatRunContext]:
     )
 
 
-def test_compute_planning_context_requires_intake(session_factory: Callable[[str], None]) -> None:
+def test_compute_planning_context_requires_intake(
+    session_factory: Callable[[str], None],
+) -> None:
     session_id = "planning-no-intake"
     session_factory(session_id)
     session_manager.get_or_create_session(session_id)
 
     planning_ctx = create_planning_context(session_id)
-    result = asyncio.run(compute_planning_context.on_invoke_tool(planning_ctx, "{}"))
+    result = run_async(compute_planning_context.on_invoke_tool(planning_ctx, "{}"))
     assert result.startswith("ERROR: cannot compute planning context")
 
 
-def test_compute_planning_context_success(session_factory: Callable[[str], None]) -> None:
+def test_compute_planning_context_success(
+    session_factory: Callable[[str], None],
+) -> None:
     session_id = "planning-success"
     session_factory(session_id)
     _, session = session_manager.get_or_create_session(session_id)
     submission = build_submission()
     intake_payload = json.dumps({"submission": submission.model_dump()})
     intake_ctx = create_intake_context(session_id, intake_payload)
-    asyncio.run(submit_intake_record.on_invoke_tool(intake_ctx, intake_payload))
+    run_async(submit_intake_record.on_invoke_tool(intake_ctx, intake_payload))
 
     planning_ctx = create_planning_context(session_id)
-    result = asyncio.run(compute_planning_context.on_invoke_tool(planning_ctx, "{}"))
+    result = run_async(compute_planning_context.on_invoke_tool(planning_ctx, "{}"))
     data = json.loads(result)
 
     assert "weights" in data

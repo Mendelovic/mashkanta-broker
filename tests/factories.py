@@ -35,6 +35,9 @@ def build_submission() -> IntakeSubmission:
         dependents=0,
         income_volatility_factor=0.2,
         notes="שכר יציב בעבודה הייטק",
+        equity_provenance="חסכונות + מתנה מההורים, הועבר לבנק",
+        gift_letter_required=False,
+        employer_stability_notes="משרה קבועה בחברת הייטק מעל 5 שנים",
     )
 
     property_details = PropertyDetails(
@@ -44,6 +47,7 @@ def build_submission() -> IntakeSubmission:
         address_region="מרכז",
         is_new_build=False,
         target_close_months=6,
+        title_notes="רישום בטאבו, ללא שעבודים או הערות אזהרה.",
     )
 
     loan = LoanAsk(
@@ -60,6 +64,7 @@ def build_submission() -> IntakeSubmission:
         red_line_payment_nis=7_500,
         expected_prepay_pct=0.15,
         expected_prepay_month=18,
+        prepayment_confirmed=True,
         rate_view=RateView.FLAT,
         additional_signals=[
             PreferenceSignal(

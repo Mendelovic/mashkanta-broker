@@ -17,17 +17,17 @@ def test_build_planning_context_creates_expected_weights():
     )
     assert pytest.approx(total_weight, rel=1e-6) == 1.0
     assert pytest.approx(context.weights.payment_volatility, rel=1e-6) == pytest.approx(
-        0.3076923077, rel=1e-6
+        0.2666666667, rel=1e-6
     )
     assert pytest.approx(context.weights.cpi_exposure, rel=1e-6) == pytest.approx(
-        0.3076923077, rel=1e-6
+        0.4, rel=1e-6
     )
     assert pytest.approx(
         context.weights.prepay_fee_exposure, rel=1e-6
-    ) == pytest.approx(0.3846153846, rel=1e-6)
+    ) == pytest.approx(0.3333333333, rel=1e-6)
     assert pytest.approx(context.soft_caps.variable_share_max, rel=1e-6) == 0.6
     assert pytest.approx(context.soft_caps.cpi_share_max, rel=1e-6) == 0.6
-    assert context.soft_caps.payment_ceiling_nis == 6_500
+    assert context.soft_caps.payment_ceiling_nis == 7_500
     assert len(context.income_timeline) == 60
     assert len(context.pti_targets) == 60
     assert context.metadata["horizon_months"] == 60
@@ -43,13 +43,14 @@ def test_build_planning_context_creates_expected_weights():
         )
         == 0.6
     )
-    assert context.metadata["assumptions"]["soft_caps"]["payment_ceiling_nis"] == 6_500
+    assert context.metadata["assumptions"]["soft_caps"]["payment_ceiling_nis"] == 7_500
 
 
 def test_build_planning_context_respects_prepayment_settings():
     submission = build_submission()
     submission.record.preferences.expected_prepay_pct = 0.2
     submission.record.preferences.expected_prepay_month = 24
+    submission.record.preferences.prepayment_confirmed = True
 
     context = build_planning_context(submission)
 
@@ -72,3 +73,21 @@ def test_build_planning_context_adjusts_for_future_plans():
     after = context.income_timeline[start_month]
 
     assert after < before
+
+
+def test_cpi_soft_cap_omitted_when_no_preference():
+    submission = build_submission()
+    submission.record.preferences.cpi_tolerance = None
+    context = build_planning_context(submission)
+
+    assert context.soft_caps.cpi_share_max is None
+    assert context.metadata["assumptions"]["soft_caps"]["cpi_share_max"] is None
+
+
+def test_cpi_soft_cap_removed_for_high_tolerance():
+    submission = build_submission()
+    submission.record.preferences.cpi_tolerance = 0
+    context = build_planning_context(submission)
+
+    assert context.soft_caps.cpi_share_max is None
+    assert context.metadata["assumptions"]["soft_caps"]["cpi_share_max"] is None

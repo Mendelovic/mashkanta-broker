@@ -5,6 +5,7 @@ from app.services.mix_optimizer import optimize_mixes
 from app.services.optimization_formatter import (
     format_candidates,
     format_comparison_matrix,
+    format_term_sweep,
 )
 from app.services.planning_mapper import build_planning_context
 from tests.factories import build_submission
@@ -30,11 +31,14 @@ def test_format_candidates_returns_all_candidates() -> None:
         >= recommended_item["metrics"]["pti_ratio"]
     )
     assert recommended_item["metrics"]["prepayment_fee_exposure"]
+    assert recommended_item["metrics"]["five_year_total_payment_nis"] > 0
+    assert recommended_item["metrics"]["peak_payment_driver"] is not None
     assert recommended_item["track_details"]
     assert "fixed_unindexed_pct" in recommended_item["shares"]
     assert "monthly_payment_display" in recommended_item["metrics"]
     assert "," in recommended_item["metrics"]["monthly_payment_display"]
     assert "pti_ratio_peak_display" in recommended_item["metrics"]
+    assert "is_engine_recommended" in recommended_item
     prime_tracks = [
         track
         for track in recommended_item["track_details"]
@@ -56,6 +60,7 @@ def test_formatter_payload_validates_against_chat_models() -> None:
     assert len(summaries) == len(candidate_payloads)
     assert all(isinstance(summary, CandidateSummary) for summary in summaries)
     assert all(summary.metrics.sensitivities for summary in summaries)
+    assert any(summary.is_engine_recommended for summary in summaries)
     feasibilities = [
         summary.feasibility for summary in summaries if summary.feasibility
     ]
@@ -76,3 +81,18 @@ def test_format_comparison_matrix_returns_expected_rows() -> None:
     assert "prepayment_fee_exposure" in first
     assert "monthly_payment_display" in first
     assert "pti_ratio_peak_display" in first
+    assert "five_year_total_payment_nis" in first
+    assert "peak_payment_driver" in first
+
+
+def test_format_term_sweep() -> None:
+    submission = build_submission()
+    planning = build_planning_context(submission)
+    result = optimize_mixes(submission.record, planning)
+
+    sweep = format_term_sweep(result.term_sweep)
+    assert sweep
+    entry = sweep[0]
+    assert "term_years" in entry
+    assert "monthly_payment_display" in entry
+    assert "pti_ratio_display" in entry
