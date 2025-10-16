@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from contextlib import asynccontextmanager
+from typing import Any, Dict, List, AsyncIterator
 
 from agents import function_tool
 from azure.ai.documentintelligence.aio import DocumentIntelligenceClient
@@ -14,26 +15,25 @@ from ...config import settings
 
 logger = logging.getLogger(__name__)
 
-_document_client: DocumentIntelligenceClient | None = None
 
-
-def _get_document_client() -> DocumentIntelligenceClient:
-    """Return a cached Azure Document Intelligence client."""
-    global _document_client
-
-    if _document_client is not None:
-        return _document_client
+@asynccontextmanager
+async def _document_client() -> AsyncIterator[DocumentIntelligenceClient]:
+    """Yield a short-lived Azure Document Intelligence client and ensure cleanup."""
 
     if not settings.azure_doc_intel_endpoint or not settings.azure_doc_intel_key:
         raise RuntimeError(
             "Azure Document Intelligence credentials are not configured."
         )
 
-    _document_client = DocumentIntelligenceClient(
+    client = DocumentIntelligenceClient(
         endpoint=settings.azure_doc_intel_endpoint,
         credential=AzureKeyCredential(settings.azure_doc_intel_key),
     )
-    return _document_client
+
+    try:
+        yield client
+    finally:
+        await client.close()
 
 
 def _summarize_key_values(pairs: list[dict[str, Any]]) -> str:
@@ -74,22 +74,24 @@ async def analyze_document(
     """Run OCR on a document and return structured findings."""
 
     try:
-        client = _get_document_client()
+        async with _document_client() as client:
+            try:
+                with open(file_path, "rb") as stream:
+                    poller = await client.begin_analyze_document(
+                        "prebuilt-layout",
+                        stream,
+                        locale=locale,
+                        features=[DocumentAnalysisFeature.KEY_VALUE_PAIRS],
+                    )
+                result = await poller.result()
+            except Exception as exc:  # pragma: no cover - network failures
+                logger.error("Document analysis failed: %s", exc)
+                return {"error": f"document analysis failed - {exc}"}
     except RuntimeError as exc:
         logger.error("Document analysis unavailable: %s", exc)
         return {"error": "OCR service is not configured."}
-
-    try:
-        with open(file_path, "rb") as stream:
-            poller = await client.begin_analyze_document(
-                "prebuilt-layout",
-                stream,
-                locale=locale,
-                features=[DocumentAnalysisFeature.KEY_VALUE_PAIRS],
-            )
-        result = await poller.result()
-    except Exception as exc:  # pragma: no cover - network failures
-        logger.error("Document analysis failed: %s", exc)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Document analysis failed to initialize: %s", exc)
         return {"error": f"document analysis failed - {exc}"}
 
     full_text = result.content or ""

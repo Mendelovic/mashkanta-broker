@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from app.configuration.menu_loader import load_average_menu_rates
 from app.domain.schemas import (
@@ -606,62 +606,65 @@ def _build_recommended_candidate(
     )
 
 
-def optimize_mixes(
+def _build_benchmark_candidate(
     interview: InterviewRecord,
     planning: PlanningContext,
-) -> OptimizationResult:
+    rate_table: Dict[str, float],
+    basket: UniformBasket,
+) -> OptimizationCandidate:
     loan_amount = interview.loan.amount_nis
     term_years = interview.loan.term_years
     net_income = interview.borrower.net_income_nis
     fixed_expenses = interview.borrower.fixed_expenses_nis
     property_value = interview.property.value_nis
 
-    rate_table = _build_rate_table(interview)
+    metrics = _compute_metrics(
+        loan_amount,
+        term_years,
+        net_income,
+        fixed_expenses,
+        property_value,
+        planning,
+        basket.shares,
+        rate_table,
+    )
+    feasibility = run_feasibility_checks(
+        property_price=interview.property.value_nis,
+        down_payment_available=interview.property.value_nis - loan_amount,
+        monthly_net_income=net_income,
+        existing_monthly_loans=fixed_expenses,
+        loan_years=term_years,
+        property_type=interview.property.type.value,
+        deal_type=interview.deal_type.value,
+        occupancy=interview.borrower.occupancy.value,
+        assessed_payment=metrics.monthly_payment_nis,
+        peak_payment=metrics.highest_expected_payment_nis,
+        borrower_age_years=interview.borrower.age_years,
+        variable_share=basket.shares.variable_prime + basket.shares.variable_cpi,
+    )
+    notes = _soft_cap_notes(planning, basket.shares, metrics)
+    if feasibility.issues:
+        notes.append("Mix requires adjustments to meet BOI limits.")
 
-    candidates: List[OptimizationCandidate] = []
+    return OptimizationCandidate(
+        label=basket.name,
+        shares=basket.shares,
+        metrics=metrics,
+        feasibility=feasibility,
+        notes=notes,
+    )
 
-    for basket in _UNIFORM_BASKETS:
-        metrics = _compute_metrics(
-            loan_amount,
-            term_years,
-            net_income,
-            fixed_expenses,
-            property_value,
-            planning,
-            basket.shares,
-            rate_table,
-        )
-        feasibility = run_feasibility_checks(
-            property_price=interview.property.value_nis,
-            down_payment_available=interview.property.value_nis - loan_amount,
-            monthly_net_income=net_income,
-            existing_monthly_loans=fixed_expenses,
-            loan_years=term_years,
-            property_type=interview.property.type.value,
-            deal_type=interview.deal_type.value,
-            occupancy=interview.borrower.occupancy.value,
-            assessed_payment=metrics.monthly_payment_nis,
-            peak_payment=metrics.highest_expected_payment_nis,
-            borrower_age_years=interview.borrower.age_years,
-            variable_share=basket.shares.variable_prime + basket.shares.variable_cpi,
-        )
-        notes = _soft_cap_notes(planning, basket.shares, metrics)
-        if feasibility.issues:
-            notes.append("Mix requires adjustments to meet BOI limits.")
-        candidates.append(
-            OptimizationCandidate(
-                label=basket.name,
-                shares=basket.shares,
-                metrics=metrics,
-                feasibility=feasibility,
-                notes=notes,
-            )
-        )
 
-    recommended = _build_recommended_candidate(interview, planning, rate_table)
-    candidates.append(recommended)
+def _score_candidates(
+    candidates: List[OptimizationCandidate], planning: PlanningContext
+) -> List[float]:
+    return [_score_candidate(candidate, planning) for candidate in candidates]
 
-    scores = [_score_candidate(c, planning) for c in candidates]
+
+def _select_candidate_indices(
+    candidates: List[OptimizationCandidate], planning: PlanningContext
+) -> Tuple[int, int, int]:
+    scores = _score_candidates(candidates, planning)
     engine_recommended_index = min(range(len(scores)), key=scores.__getitem__)
 
     def _violates_soft_caps(candidate: OptimizationCandidate) -> bool:
@@ -684,22 +687,114 @@ def optimize_mixes(
         for idx, candidate in enumerate(candidates)
         if not _violates_soft_caps(candidate)
     ]
+
     if advisor_candidates:
-        advisor_recommended_index = min(
-            advisor_candidates,
-            key=lambda idx: scores[idx],
-        )
+        advisor_recommended_index = min(advisor_candidates, key=lambda idx: scores[idx])
     else:
         advisor_recommended_index = engine_recommended_index
 
     recommended_index = advisor_recommended_index
+    return engine_recommended_index, advisor_recommended_index, recommended_index
 
-    assumptions = {
+
+def _compute_pareto_alerts(
+    candidates: List[OptimizationCandidate], recommended_index: int
+) -> List[str]:
+    def _dominates(left: OptimizationCandidate, right: OptimizationCandidate) -> bool:
+        lm, rm = left.metrics, right.metrics
+        return (
+            lm.monthly_payment_nis <= rm.monthly_payment_nis + 1e-6
+            and lm.highest_expected_payment_nis
+            <= rm.highest_expected_payment_nis + 1e-6
+            and (
+                lm.monthly_payment_nis < rm.monthly_payment_nis - 1e-6
+                or lm.highest_expected_payment_nis
+                < rm.highest_expected_payment_nis - 1e-6
+            )
+        )
+
+    recommended_candidate = candidates[recommended_index]
+    pareto_alerts: List[str] = []
+    for idx, candidate in enumerate(candidates):
+        if idx == recommended_index:
+            continue
+        if _dominates(candidate, recommended_candidate):
+            pareto_alerts.append(
+                f"{candidate.label} dominates recommended mix on opening and peak payments."
+            )
+    return pareto_alerts
+
+
+def _build_assumptions(
+    interview: InterviewRecord,
+    planning: PlanningContext,
+    rate_table: Dict[str, float],
+    advisor_candidate: OptimizationCandidate,
+    candidates: List[OptimizationCandidate],
+    recommended_index: int,
+) -> Dict[str, Any]:
+    loan_amount = interview.loan.amount_nis
+    term_years = interview.loan.term_years
+    net_income = interview.borrower.net_income_nis
+    fixed_expenses = interview.borrower.fixed_expenses_nis
+
+    assumptions: Dict[str, Any] = {
         "loan_amount": loan_amount,
         "term_years": term_years,
         "net_income": net_income,
         "existing_loans": fixed_expenses,
     }
+
+    anchor_rates_pct = {
+        anchor.value: BASE_ANCHOR_RATES[anchor] * 100 for anchor in BASE_ANCHOR_RATES
+    }
+    rate_table_snapshot_pct = {key: value * 100 for key, value in rate_table.items()}
+    assumptions.update(
+        {
+            "anchor_rates_pct": anchor_rates_pct,
+            "rate_table_snapshot_pct": rate_table_snapshot_pct,
+            "rate_table_captured_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+    assumptions["pareto_alerts"] = _compute_pareto_alerts(candidates, recommended_index)
+    assumptions["advisor_recommendation_label"] = advisor_candidate.label
+
+    return assumptions
+
+
+def optimize_mixes(
+    interview: InterviewRecord,
+    planning: PlanningContext,
+) -> OptimizationResult:
+    loan_amount = interview.loan.amount_nis
+    term_years = interview.loan.term_years
+    net_income = interview.borrower.net_income_nis
+    fixed_expenses = interview.borrower.fixed_expenses_nis
+    property_value = interview.property.value_nis
+
+    rate_table = _build_rate_table(interview)
+
+    candidates: List[OptimizationCandidate] = []
+
+    for basket in _UNIFORM_BASKETS:
+        candidates.append(
+            _build_benchmark_candidate(
+                interview=interview,
+                planning=planning,
+                rate_table=rate_table,
+                basket=basket,
+            )
+        )
+
+    recommended = _build_recommended_candidate(interview, planning, rate_table)
+    candidates.append(recommended)
+
+    (
+        engine_recommended_index,
+        advisor_recommended_index,
+        recommended_index,
+    ) = _select_candidate_indices(candidates, planning)
 
     advisor_candidate = candidates[advisor_recommended_index]
     term_sweep = _build_term_sweep(
@@ -714,43 +809,14 @@ def optimize_mixes(
         base_metrics=advisor_candidate.metrics,
     )
 
-    anchor_rates_pct = {
-        anchor.value: BASE_ANCHOR_RATES[anchor] * 100 for anchor in BASE_ANCHOR_RATES
-    }
-    rate_table_snapshot_pct = {key: value * 100 for key, value in rate_table.items()}
-    assumptions.update(
-        {
-            "anchor_rates_pct": anchor_rates_pct,
-            "rate_table_snapshot_pct": rate_table_snapshot_pct,
-            "rate_table_captured_at": datetime.now(timezone.utc).isoformat(),
-        }
+    assumptions = _build_assumptions(
+        interview=interview,
+        planning=planning,
+        rate_table=rate_table,
+        advisor_candidate=advisor_candidate,
+        candidates=candidates,
+        recommended_index=recommended_index,
     )
-
-    def _dominates(left: OptimizationCandidate, right: OptimizationCandidate) -> bool:
-        lm, rm = left.metrics, right.metrics
-        return (
-            lm.monthly_payment_nis <= rm.monthly_payment_nis + 1e-6
-            and lm.highest_expected_payment_nis
-            <= rm.highest_expected_payment_nis + 1e-6
-            and (
-                lm.monthly_payment_nis < rm.monthly_payment_nis - 1e-6
-                or lm.highest_expected_payment_nis
-                < rm.highest_expected_payment_nis - 1e-6
-            )
-        )
-
-    pareto_alerts: List[str] = []
-    for idx, candidate in enumerate(candidates):
-        if idx == recommended_index:
-            continue
-        if _dominates(candidate, advisor_candidate):
-            pareto_alerts.append(
-                f"{candidate.label} dominates recommended mix on opening and peak payments."
-            )
-    if pareto_alerts:
-        assumptions["pareto_alerts"] = pareto_alerts
-    else:
-        assumptions["pareto_alerts"] = []
 
     return OptimizationResult(
         candidates=candidates,

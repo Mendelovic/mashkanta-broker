@@ -7,8 +7,9 @@ import copy
 import logging
 import threading
 import uuid
+from dataclasses import dataclass
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Tuple
 
 from agents.items import TResponseInputItem
@@ -27,6 +28,17 @@ from ..models.intake import IntakeRevision, IntakeStore
 logger = logging.getLogger(__name__)
 
 TimelineUpdatePayload = Dict[str, Any]
+_cache_lock = threading.RLock()
+
+
+def _utcnow() -> datetime:
+    return datetime.now()
+
+
+@dataclass
+class _SessionEntry:
+    session: "InMemorySession"
+    last_access: datetime
 
 
 class InMemorySession(SessionABC):
@@ -171,7 +183,33 @@ class InMemorySession(SessionABC):
 
 
 # TODO: Add session eviction or persistence before production use to avoid unbounded growth.
-_session_cache: Dict[str, InMemorySession] = {}
+_session_cache: Dict[str, _SessionEntry] = {}
+
+
+def _purge_expired_sessions(now: datetime) -> None:
+    ttl_minutes = settings.session_ttl_minutes
+    max_entries = settings.session_max_entries
+
+    if ttl_minutes > 0:
+        expiry_threshold = now - timedelta(minutes=ttl_minutes)
+        expired_keys = [
+            key
+            for key, entry in _session_cache.items()
+            if entry.last_access < expiry_threshold
+        ]
+        for key in expired_keys:
+            logger.debug("Evicting expired session: %s", key)
+            del _session_cache[key]
+
+    if max_entries > 0 and len(_session_cache) > max_entries:
+        surplus = len(_session_cache) - max_entries
+        if surplus > 0:
+            ordered = sorted(
+                _session_cache.items(), key=lambda item: item[1].last_access
+            )
+            for key, _ in ordered[:surplus]:
+                logger.debug("Evicting LRU session to maintain capacity: %s", key)
+                del _session_cache[key]
 
 
 def _generate_session_id() -> str:
@@ -183,20 +221,50 @@ def _generate_session_id() -> str:
 def get_or_create_session(session_id: Optional[str]) -> Tuple[str, InMemorySession]:
     """Return an existing in-memory session or create a new one."""
 
-    if session_id and session_id in _session_cache:
-        return session_id, _session_cache[session_id]
+    with _cache_lock:
+        now = _utcnow()
+        _purge_expired_sessions(now)
 
-    new_id = session_id or _generate_session_id()
-    session = InMemorySession(new_id)
-    _session_cache[new_id] = session
-    logger.debug("Created new session: %s", new_id)
-    return new_id, session
+        if session_id:
+            entry = _session_cache.get(session_id)
+            if entry is not None:
+                entry.last_access = now
+                return session_id, entry.session
+
+        new_id = session_id or _generate_session_id()
+        entry = _session_cache.get(new_id)
+        if entry is not None:
+            entry.last_access = now
+            return new_id, entry.session
+
+        session = InMemorySession(new_id)
+        _session_cache[new_id] = _SessionEntry(session=session, last_access=now)
+        logger.debug("Created new session: %s", new_id)
+        _purge_expired_sessions(now)
+        return new_id, session
 
 
 def get_session(session_id: str) -> InMemorySession | None:
     """Return a session when it already exists."""
 
-    return _session_cache.get(session_id)
+    with _cache_lock:
+        entry = _session_cache.get(session_id)
+        if entry is None:
+            return None
+        entry.last_access = _utcnow()
+        return entry.session
 
 
-__all__ = ["get_or_create_session", "get_session", "InMemorySession"]
+def clear_all_sessions() -> None:
+    """Clear all cached sessions (primarily for testing and maintenance)."""
+
+    with _cache_lock:
+        _session_cache.clear()
+
+
+__all__ = [
+    "get_or_create_session",
+    "get_session",
+    "InMemorySession",
+    "clear_all_sessions",
+]

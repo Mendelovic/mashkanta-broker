@@ -28,6 +28,8 @@ class Settings(BaseSettings):
 
     # Session Management Configuration
     default_session_prefix: str = "mortgage_session_"
+    session_max_entries: int = 500
+    session_ttl_minutes: int = 180
 
     # Chat Configuration
     max_message_length: int = 2000

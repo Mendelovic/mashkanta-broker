@@ -2,7 +2,8 @@ import logging
 import os
 import shutil
 import tempfile
-from typing import Annotated, Optional, Any, List
+from dataclasses import dataclass
+from typing import Annotated, Optional, Any, List, Tuple
 
 from fastapi import (
     APIRouter,
@@ -101,6 +102,190 @@ class CandidateFeasibility(BaseModel):
     pti_ratio_peak: Optional[float] = None
     pti_limit: Optional[float] = None
     issues: Optional[List[str]] = None
+
+
+@dataclass
+class UploadProcessingResult:
+    message_prefix: str
+    temp_paths: List[str]
+    files_processed: int
+
+
+def _close_uploads(files: Optional[list[UploadFile]]) -> None:
+    for uploaded in files or []:
+        try:
+            uploaded.file.close()
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+
+def _process_uploads(files: Optional[list[UploadFile]]) -> UploadProcessingResult:
+    candidate_files = [
+        file for file in files or [] if file and getattr(file, "filename", None)
+    ]
+    if not candidate_files:
+        _close_uploads(files)
+        return UploadProcessingResult(
+            message_prefix="", temp_paths=[], files_processed=0
+        )
+
+    if len(candidate_files) > settings.max_files_per_request:
+        _close_uploads(files)
+        raise HTTPException(
+            status_code=400,
+            detail=f"You can upload up to {settings.max_files_per_request} files per request.",
+        )
+
+    upload_lines: list[str] = []
+    temp_paths: list[str] = []
+
+    try:
+        for uploaded in candidate_files:
+            filename = uploaded.filename or ""
+            lowered = filename.lower()
+            if not lowered.endswith((".pdf", ".png", ".jpg", ".jpeg")):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Only PDF and image files (PNG/JPG) are supported.",
+                )
+
+            suffix = os.path.splitext(lowered)[1] or ".pdf"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                shutil.copyfileobj(uploaded.file, tmp)
+                temp_path = tmp.name
+                temp_paths.append(temp_path)
+
+            display_name = uploaded.filename or os.path.basename(temp_path)
+            upload_lines.append(f"- {display_name}: {temp_path}")
+            logger.info(
+                "Stored uploaded document for analysis: %s -> %s",
+                uploaded.filename,
+                temp_path,
+            )
+    finally:
+        _close_uploads(files)
+
+    message_prefix = ""
+    if upload_lines:
+        message_prefix = "\n[DOCUMENT_UPLOADS]\n" + "\n".join(upload_lines) + "\n\n"
+
+    return UploadProcessingResult(
+        message_prefix=message_prefix,
+        temp_paths=temp_paths,
+        files_processed=len(temp_paths),
+    )
+
+
+def _cleanup_temp_paths(temp_paths: List[str]) -> None:
+    for temp_path in temp_paths:
+        try:
+            os.unlink(temp_path)
+            logger.debug("Removed temp document: %s", temp_path)
+        except OSError:
+            logger.warning("Failed to remove temp document: %s", temp_path)
+
+
+def _gather_session_state(
+    session,
+) -> Tuple[dict, dict, Optional[dict], Optional[Any], Optional[dict]]:
+    timeline_state = session.get_timeline().to_dict()
+    intake_state = session.get_intake().to_dict()
+    planning_context = session.get_planning_context()
+    planning_state = (
+        planning_context.model_dump() if planning_context is not None else None
+    )
+    optimization_result = session.get_optimization_result()
+    optimization_state = (
+        optimization_result.model_dump() if optimization_result is not None else None
+    )
+    return (
+        timeline_state,
+        intake_state,
+        planning_state,
+        optimization_result,
+        optimization_state,
+    )
+
+
+def _build_optimization_payload(
+    optimization_result,
+) -> Tuple[
+    Optional[List["CandidateSummary"]],
+    Optional[List["ComparisonRow"]],
+    Optional["OptimizationSummary"],
+    Optional[List["OptimizationTermSweepEntry"]],
+    Optional[int],
+    Optional[int],
+]:
+    if optimization_result is None:
+        return None, None, None, None, None, None
+
+    candidate_payloads = format_candidates(optimization_result)
+    optimization_matrix = [
+        ComparisonRow(**row) for row in format_comparison_matrix(optimization_result)
+    ]
+
+    candidate_list: List[CandidateSummary] = [
+        build_candidate_summary(item) for item in candidate_payloads
+    ]
+    candidate_models: Optional[List[CandidateSummary]] = (
+        candidate_list if candidate_list else None
+    )
+
+    optimization_summary: Optional[OptimizationSummary] = None
+    engine_recommended_index: Optional[int] = None
+    advisor_recommended_index: Optional[int] = None
+
+    if candidate_models:
+        engine_recommended_index = optimization_result.engine_recommended_index
+        advisor_recommended_index = (
+            optimization_result.advisor_recommended_index
+            if optimization_result.advisor_recommended_index is not None
+            else optimization_result.recommended_index
+        )
+        recommended_candidate = next(
+            (candidate for candidate in candidate_models if candidate.is_recommended),
+            candidate_models[0],
+        )
+        engine_candidate = next(
+            (
+                candidate
+                for candidate in candidate_models
+                if candidate.is_engine_recommended
+            ),
+            recommended_candidate,
+        )
+        optimization_summary = OptimizationSummary(
+            label=recommended_candidate.label,
+            index=recommended_candidate.index,
+            monthly_payment_nis=recommended_candidate.metrics.monthly_payment_nis,
+            stress_payment_nis=recommended_candidate.metrics.stress_payment_nis,
+            highest_expected_payment_nis=recommended_candidate.metrics.highest_expected_payment_nis,
+            expected_weighted_payment_nis=recommended_candidate.metrics.expected_weighted_payment_nis,
+            pti_ratio=recommended_candidate.metrics.pti_ratio,
+            pti_ratio_peak=recommended_candidate.metrics.pti_ratio_peak,
+            highest_expected_payment_note=recommended_candidate.metrics.highest_expected_payment_note,
+            peak_payment_month=recommended_candidate.metrics.peak_payment_month,
+            peak_payment_driver=recommended_candidate.metrics.peak_payment_driver,
+            engine_label=engine_candidate.label,
+            engine_index=engine_candidate.index,
+        )
+
+    term_sweep_rows: Optional[List[OptimizationTermSweepEntry]] = None
+    if optimization_result.term_sweep:
+        term_sweep_rows = [
+            OptimizationTermSweepEntry(**row)
+            for row in format_term_sweep(optimization_result.term_sweep)
+        ]
+
+    return (
+        candidate_models,
+        optimization_matrix,
+        optimization_summary,
+        term_sweep_rows,
+        engine_recommended_index,
+        advisor_recommended_index,
+    )
 
 
 class CandidateSummary(BaseModel):
@@ -300,147 +485,44 @@ async def unified_chat_endpoint(
         if provided_thread_id is None:
             logger.info("Assigned new session_id: %s", thread_id)
 
-        files_processed = 0
-        temp_paths: list[str] = []
-
-        candidate_files = files or []
-        valid_files = [
-            file for file in candidate_files if file and getattr(file, "filename", None)
-        ]
-
-        if valid_files:
-            if len(valid_files) > settings.max_files_per_request:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"You can upload up to {settings.max_files_per_request} files per request.",
-                )
-
-            try:
-                upload_lines: list[str] = []
-                for uploaded in valid_files:
-                    filename = uploaded.filename or ""
-                    lowered = filename.lower()
-                    if not lowered.endswith((".pdf", ".png", ".jpg", ".jpeg")):
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Only PDF and image files (PNG/JPG) are supported.",
-                        )
-
-                    suffix = os.path.splitext(lowered)[1] or ".pdf"
-
-                    with tempfile.NamedTemporaryFile(
-                        delete=False, suffix=suffix
-                    ) as tmp:
-                        shutil.copyfileobj(uploaded.file, tmp)
-                        temp_path = tmp.name
-                        temp_paths.append(temp_path)
-
-                    files_processed += 1
-                    display_name = uploaded.filename or os.path.basename(temp_path)
-                    upload_lines.append(f"- {display_name}: {temp_path}")
-                    logger.info(
-                        "Stored uploaded document for analysis: %s -> %s",
-                        uploaded.filename,
-                        temp_path,
-                    )
-
-                file_context = (
-                    "\n[DOCUMENT_UPLOADS]\n" + "\n".join(upload_lines) + "\n\n"
-                )
-                message = file_context + message
-
-            finally:
-                for uploaded in files or []:
-                    try:
-                        uploaded.file.close()
-                    except Exception:  # pragma: no cover
-                        pass
+        upload_result = _process_uploads(files)
+        if upload_result.message_prefix:
+            message = upload_result.message_prefix + message
+        files_processed = upload_result.files_processed
+        temp_paths = upload_result.temp_paths
 
         agent = getattr(request.app.state, "orchestrator", None)
         if agent is None:
             logger.error("Chat orchestrator is not initialized")
             raise HTTPException(status_code=503, detail="Chat agent is unavailable")
 
-        result = await Runner.run(
-            agent,
-            message,
-            session=session,
-            context=ChatRunContext(session_id=thread_id),
-            max_turns=settings.agent_max_turns,
-        )
+        try:
+            result = await Runner.run(
+                agent,
+                message,
+                session=session,
+                context=ChatRunContext(session_id=thread_id),
+                max_turns=settings.agent_max_turns,
+            )
+        finally:
+            _cleanup_temp_paths(temp_paths)
 
-        for temp_path in temp_paths:
-            try:
-                os.unlink(temp_path)
-                logger.debug("Removed temp document: %s", temp_path)
-            except OSError:
-                logger.warning("Failed to remove temp document: %s", temp_path)
+        (
+            timeline_state,
+            intake_state,
+            planning_state,
+            optimization_result,
+            optimization_state,
+        ) = _gather_session_state(session)
 
-        timeline_state = session.get_timeline().to_dict()
-        intake_state = session.get_intake().to_dict()
-        planning_context = session.get_planning_context()
-        planning_state = (
-            planning_context.model_dump() if planning_context is not None else None
-        )
-        optimization_result = session.get_optimization_result()
-        optimization_state = (
-            optimization_result.model_dump()
-            if optimization_result is not None
-            else None
-        )
-
-        optimization_summary: OptimizationSummary | None = None
-        optimization_candidates: List[CandidateSummary] | None = None
-        optimization_matrix: List[ComparisonRow] | None = None
-        term_sweep_rows: List[OptimizationTermSweepEntry] | None = None
-        engine_recommended_index: Optional[int] = None
-        advisor_recommended_index: Optional[int] = None
-        if optimization_result is not None:
-            candidate_payloads = format_candidates(optimization_result)
-            optimization_matrix = [
-                ComparisonRow(**row)
-                for row in format_comparison_matrix(optimization_result)
-            ]
-            candidate_models: List[CandidateSummary] = []
-            for item in candidate_payloads:
-                candidate_models.append(build_candidate_summary(item))
-            if candidate_models:
-                optimization_candidates = candidate_models
-                engine_recommended_index = optimization_result.engine_recommended_index
-                advisor_recommended_index = (
-                    optimization_result.advisor_recommended_index
-                    if optimization_result.advisor_recommended_index is not None
-                    else optimization_result.recommended_index
-                )
-                recommended_candidate = next(
-                    (c for c in candidate_models if c.is_recommended),
-                    candidate_models[0],
-                )
-                engine_candidate = next(
-                    (c for c in candidate_models if c.is_engine_recommended),
-                    recommended_candidate,
-                )
-                optimization_summary = OptimizationSummary(
-                    label=recommended_candidate.label,
-                    index=recommended_candidate.index,
-                    monthly_payment_nis=recommended_candidate.metrics.monthly_payment_nis,
-                    stress_payment_nis=recommended_candidate.metrics.stress_payment_nis,
-                    highest_expected_payment_nis=recommended_candidate.metrics.highest_expected_payment_nis,
-                    expected_weighted_payment_nis=recommended_candidate.metrics.expected_weighted_payment_nis,
-                    pti_ratio=recommended_candidate.metrics.pti_ratio,
-                    pti_ratio_peak=recommended_candidate.metrics.pti_ratio_peak,
-                    highest_expected_payment_note=recommended_candidate.metrics.highest_expected_payment_note,
-                    peak_payment_month=recommended_candidate.metrics.peak_payment_month,
-                    peak_payment_driver=recommended_candidate.metrics.peak_payment_driver,
-                    engine_label=engine_candidate.label,
-                    engine_index=engine_candidate.index,
-                )
-
-            if optimization_result.term_sweep:
-                term_sweep_rows = [
-                    OptimizationTermSweepEntry(**row)
-                    for row in format_term_sweep(optimization_result.term_sweep)
-                ]
+        (
+            optimization_candidates,
+            optimization_matrix,
+            optimization_summary,
+            term_sweep_rows,
+            engine_recommended_index,
+            advisor_recommended_index,
+        ) = _build_optimization_payload(optimization_result)
 
         return ChatResponse(
             response=result.final_output,
