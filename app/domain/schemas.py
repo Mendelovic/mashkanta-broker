@@ -482,13 +482,6 @@ class TrackShares(BaseModel):
         )
 
 
-class UniformBasket(BaseModel):
-    """Representation of a BOI uniform basket benchmark."""
-
-    name: str
-    shares: TrackShares
-
-
 class TrackDetail(BaseModel):
     """Describes a single track component within a mix."""
 

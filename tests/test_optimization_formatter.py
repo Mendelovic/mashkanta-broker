@@ -21,7 +21,6 @@ def test_format_candidates_returns_all_candidates() -> None:
     assert len(summaries) == len(result.candidates)
     labels = [item["label"] for item in summaries]
     assert result.candidates[0].label in labels
-
     recommended = [item for item in summaries if item["is_recommended"]]
     assert len(recommended) == 1
     recommended_item = recommended[0]

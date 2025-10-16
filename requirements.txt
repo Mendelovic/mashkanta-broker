@@ -1,5 +1,4 @@
-fastapi
-uvicorn[standard]
+fastapi[standard]
 openai
 openai-agents
 python-dotenv
@@ -11,4 +10,3 @@ aiohttp
 numpy
 pandas
 pyyaml
-hypothesis

@@ -17,7 +17,6 @@ from app.domain.schemas import (
     TrackShares,
     TrackDetail,
     PaymentSensitivity,
-    UniformBasket,
 )
 from app.services.deal_feasibility import run_feasibility_checks
 
@@ -37,6 +36,7 @@ DEFAULT_TRACK_RATES: Dict[str, float] = {
 }
 
 _MENU_TRACK_RATES = load_average_menu_rates()
+MAX_VARIABLE_SHARE = 2 / 3
 
 
 def _estimate_prepayment_exposure(shares: TrackShares) -> str:
@@ -148,36 +148,6 @@ SENSITIVITY_SHOCKS: List[Tuple[str, Dict[str, float]]] = [
     ("prime_+2pct", {"variable_prime": 0.02}),
     ("prime_+3pct", {"variable_prime": 0.03}),
     ("cpi_path_+2pct", {"fixed_cpi": 0.02, "variable_cpi": 0.02}),
-]
-
-_UNIFORM_BASKETS: List[UniformBasket] = [
-    UniformBasket(
-        name="Uniform Basket A - Fixed",
-        shares=TrackShares(
-            fixed_unindexed=1.0,
-            fixed_cpi=0.0,
-            variable_prime=0.0,
-            variable_cpi=0.0,
-        ),
-    ),
-    UniformBasket(
-        name="Uniform Basket B - Mixed",
-        shares=TrackShares(
-            fixed_unindexed=1 / 3,
-            fixed_cpi=0.0,
-            variable_prime=1 / 3,
-            variable_cpi=1 / 3,
-        ),
-    ),
-    UniformBasket(
-        name="Uniform Basket C - Fixed & Prime",
-        shares=TrackShares(
-            fixed_unindexed=0.5,
-            fixed_cpi=0.0,
-            variable_prime=0.5,
-            variable_cpi=0.0,
-        ),
-    ),
 ]
 
 
@@ -536,81 +506,12 @@ def _score_candidate(
     )
 
 
-def _build_recommended_candidate(
-    interview: InterviewRecord, planning: PlanningContext, rate_table: Dict[str, float]
-) -> OptimizationCandidate:
-    loan_amount = interview.loan.amount_nis
-    term_years = interview.loan.term_years
-    income = interview.borrower.net_income_nis
-    existing_loans = interview.borrower.fixed_expenses_nis
-    property_value = interview.property.value_nis
-
-    variable_cap = min(planning.soft_caps.variable_share_max, 0.66)
-    cpi_cap = planning.soft_caps.cpi_share_max
-    effective_cpi_cap = cpi_cap if cpi_cap is not None else 1.0
-
-    variable_cpi = min(variable_cap, effective_cpi_cap * 0.5)
-    variable_prime = max(variable_cap - variable_cpi, 0.0)
-
-    fixed_remaining = max(1.0 - (variable_prime + variable_cpi), 0.0)
-    if cpi_cap is not None:
-        fixed_cpi = min(cpi_cap - variable_cpi, max(fixed_remaining * 0.25, 0.0))
-    else:
-        fixed_cpi = max(fixed_remaining * 0.25, 0.0)
-    fixed_unindexed = max(1.0 - (variable_prime + variable_cpi + fixed_cpi), 0.0)
-
-    shares = TrackShares(
-        fixed_unindexed=fixed_unindexed,
-        fixed_cpi=max(fixed_cpi, 0.0),
-        variable_prime=variable_prime,
-        variable_cpi=variable_cpi,
-    )
-
-    metrics = _compute_metrics(
-        loan_amount,
-        term_years,
-        income,
-        existing_loans,
-        property_value,
-        planning,
-        shares,
-        rate_table,
-    )
-    variable_share = shares.variable_prime + shares.variable_cpi
-    feasibility = run_feasibility_checks(
-        property_price=interview.property.value_nis,
-        down_payment_available=interview.property.value_nis - loan_amount,
-        monthly_net_income=income,
-        existing_monthly_loans=existing_loans,
-        loan_years=term_years,
-        property_type=interview.property.type.value,
-        deal_type=interview.deal_type.value,
-        occupancy=interview.borrower.occupancy.value,
-        assessed_payment=metrics.monthly_payment_nis,
-        peak_payment=metrics.highest_expected_payment_nis,
-        borrower_age_years=interview.borrower.age_years,
-        variable_share=variable_share,
-    )
-
-    notes: List[str] = []
-    if feasibility.issues:
-        notes.append("Mix requires adjustments to meet BOI limits.")
-    notes.extend(_soft_cap_notes(planning, shares, metrics))
-
-    return OptimizationCandidate(
-        label="Customized mix",
-        shares=shares,
-        metrics=metrics,
-        feasibility=feasibility,
-        notes=notes,
-    )
-
-
-def _build_benchmark_candidate(
+def _assemble_candidate(
+    label: str,
+    shares: TrackShares,
     interview: InterviewRecord,
     planning: PlanningContext,
     rate_table: Dict[str, float],
-    basket: UniformBasket,
 ) -> OptimizationCandidate:
     loan_amount = interview.loan.amount_nis
     term_years = interview.loan.term_years
@@ -625,7 +526,7 @@ def _build_benchmark_candidate(
         fixed_expenses,
         property_value,
         planning,
-        basket.shares,
+        shares,
         rate_table,
     )
     feasibility = run_feasibility_checks(
@@ -640,31 +541,176 @@ def _build_benchmark_candidate(
         assessed_payment=metrics.monthly_payment_nis,
         peak_payment=metrics.highest_expected_payment_nis,
         borrower_age_years=interview.borrower.age_years,
-        variable_share=basket.shares.variable_prime + basket.shares.variable_cpi,
+        variable_share=shares.variable_prime + shares.variable_cpi,
     )
-    notes = _soft_cap_notes(planning, basket.shares, metrics)
+    notes = _soft_cap_notes(planning, shares, metrics)
     if feasibility.issues:
-        notes.append("Mix requires adjustments to meet BOI limits.")
+        warning = "Mix requires adjustments to meet BOI limits."
+        if warning not in notes:
+            notes.append(warning)
 
     return OptimizationCandidate(
-        label=basket.name,
-        shares=basket.shares,
+        label=label,
+        shares=shares,
         metrics=metrics,
         feasibility=feasibility,
         notes=notes,
     )
 
 
-def _score_candidates(
-    candidates: List[OptimizationCandidate], planning: PlanningContext
-) -> List[float]:
-    return [_score_candidate(candidate, planning) for candidate in candidates]
+def _compose_shares(
+    variable_prime: float,
+    variable_cpi: float,
+    fixed_cpi: float,
+    planning: PlanningContext,
+) -> TrackShares:
+    variable_prime = max(variable_prime, 0.0)
+    variable_cpi = max(variable_cpi, 0.0)
+    fixed_cpi = max(fixed_cpi, 0.0)
+
+    variable_cap = min(planning.soft_caps.variable_share_max, MAX_VARIABLE_SHARE)
+    variable_total = variable_prime + variable_cpi
+    if variable_total > variable_cap + 1e-6:
+        scale = variable_cap / variable_total if variable_total > 0 else 0.0
+        variable_prime *= scale
+        variable_cpi *= scale
+        variable_total = variable_cap
+
+    cpi_cap = planning.soft_caps.cpi_share_max
+    if cpi_cap is not None:
+        total_cpi = variable_cpi + fixed_cpi
+        if total_cpi > cpi_cap + 1e-6:
+            excess = total_cpi - cpi_cap
+            reduction = min(fixed_cpi, excess)
+            fixed_cpi -= reduction
+            excess -= reduction
+            if excess > 0:
+                reduction = min(variable_cpi, excess)
+                variable_cpi -= reduction
+                excess -= reduction
+            fixed_cpi = max(fixed_cpi, 0.0)
+            variable_cpi = max(variable_cpi, 0.0)
+
+    variable_prime = max(variable_prime, 0.0)
+    variable_cpi = max(variable_cpi, 0.0)
+    fixed_cpi = max(fixed_cpi, 0.0)
+
+    total = variable_prime + variable_cpi + fixed_cpi
+    if total > 1.0 + 1e-6:
+        scale = 1.0 / total if total > 0 else 0.0
+        variable_prime *= scale
+        variable_cpi *= scale
+        fixed_cpi *= scale
+        total = variable_prime + variable_cpi + fixed_cpi
+
+    fixed_unindexed = max(1.0 - total, 0.0)
+    total = variable_prime + variable_cpi + fixed_cpi + fixed_unindexed
+    if abs(total - 1.0) > 1e-6:
+        fixed_unindexed += 1.0 - total
+        fixed_unindexed = max(fixed_unindexed, 0.0)
+
+    return TrackShares(
+        fixed_unindexed=fixed_unindexed,
+        fixed_cpi=fixed_cpi,
+        variable_prime=variable_prime,
+        variable_cpi=variable_cpi,
+    )
+
+
+def _generate_balanced_shares(planning: PlanningContext) -> TrackShares:
+    variable_cap = min(planning.soft_caps.variable_share_max, MAX_VARIABLE_SHARE)
+    cpi_cap = planning.soft_caps.cpi_share_max
+    effective_cpi_cap = cpi_cap if cpi_cap is not None else 1.0
+
+    variable_cpi = min(variable_cap, effective_cpi_cap * 0.5)
+    variable_prime = max(variable_cap - variable_cpi, 0.0)
+    fixed_remaining = max(1.0 - (variable_prime + variable_cpi), 0.0)
+
+    if cpi_cap is not None:
+        max_fixed_cpi = max(cpi_cap - variable_cpi, 0.0)
+        fixed_cpi = min(max_fixed_cpi, fixed_remaining * 0.25)
+    else:
+        fixed_cpi = fixed_remaining * 0.25
+
+    return _compose_shares(variable_prime, variable_cpi, fixed_cpi, planning)
+
+
+def _generate_stability_shares(
+    planning: PlanningContext, base_shares: TrackShares
+) -> TrackShares:
+    base_variable = base_shares.variable_prime + base_shares.variable_cpi
+    reduction = min(0.1, base_variable)
+    target_variable = max(base_variable - reduction, 0.05)
+    target_variable = min(target_variable, planning.soft_caps.variable_share_max)
+
+    ratio_prime = (
+        base_shares.variable_prime / base_variable if base_variable > 1e-6 else 0.6
+    )
+    ratio_prime = min(max(ratio_prime, 0.3), 0.8)
+    variable_prime = target_variable * ratio_prime
+    variable_cpi = max(target_variable - variable_prime, 0.0)
+
+    if planning.soft_caps.cpi_share_max is not None:
+        max_fixed_cpi = max(planning.soft_caps.cpi_share_max - variable_cpi, 0.0)
+        fixed_cpi_target = min(base_shares.fixed_cpi + reduction * 0.5, max_fixed_cpi)
+    else:
+        fixed_cpi_target = min(base_shares.fixed_cpi + reduction * 0.5, 0.25)
+
+    return _compose_shares(variable_prime, variable_cpi, fixed_cpi_target, planning)
+
+
+def _generate_low_payment_shares(
+    planning: PlanningContext, base_shares: TrackShares
+) -> TrackShares:
+    base_variable = base_shares.variable_prime + base_shares.variable_cpi
+    headroom = max(planning.soft_caps.variable_share_max - base_variable, 0.0)
+    increase = min(0.1, headroom)
+    target_variable = min(
+        base_variable + increase, planning.soft_caps.variable_share_max
+    )
+
+    ratio_prime = (
+        base_shares.variable_prime / base_variable if base_variable > 1e-6 else 0.6
+    )
+    ratio_prime = min(max(ratio_prime + 0.1, 0.4), 0.9)
+    variable_prime = min(target_variable * ratio_prime, target_variable)
+    variable_cpi = max(target_variable - variable_prime, 0.0)
+
+    fixed_cpi_target = max(base_shares.fixed_cpi - increase * 0.5, 0.0)
+
+    return _compose_shares(variable_prime, variable_cpi, fixed_cpi_target, planning)
+
+
+def _shares_are_close(left: TrackShares, right: TrackShares, tol: float = 1e-3) -> bool:
+    return (
+        abs(left.fixed_unindexed - right.fixed_unindexed) <= tol
+        and abs(left.fixed_cpi - right.fixed_cpi) <= tol
+        and abs(left.variable_prime - right.variable_prime) <= tol
+        and abs(left.variable_cpi - right.variable_cpi) <= tol
+    )
+
+
+def _build_personalized_candidate(
+    interview: InterviewRecord,
+    planning: PlanningContext,
+    rate_table: Dict[str, float],
+    label: str,
+    shares: TrackShares,
+) -> OptimizationCandidate:
+    return _assemble_candidate(
+        label=label,
+        shares=shares,
+        interview=interview,
+        planning=planning,
+        rate_table=rate_table,
+    )
 
 
 def _select_candidate_indices(
-    candidates: List[OptimizationCandidate], planning: PlanningContext
+    candidates: List[OptimizationCandidate],
+    planning: PlanningContext,
 ) -> Tuple[int, int, int]:
-    scores = _score_candidates(candidates, planning)
+    scores = [_score_candidate(candidate, planning) for candidate in candidates]
     engine_recommended_index = min(range(len(scores)), key=scores.__getitem__)
 
     def _violates_soft_caps(candidate: OptimizationCandidate) -> bool:
@@ -775,20 +821,46 @@ def optimize_mixes(
 
     rate_table = _build_rate_table(interview)
 
-    candidates: List[OptimizationCandidate] = []
+    personalized_candidates: List[OptimizationCandidate] = []
 
-    for basket in _UNIFORM_BASKETS:
-        candidates.append(
-            _build_benchmark_candidate(
+    balanced_shares = _generate_balanced_shares(planning)
+    balanced_candidate = _build_personalized_candidate(
+        interview=interview,
+        planning=planning,
+        rate_table=rate_table,
+        label="Tailored Mix – Balanced",
+        shares=balanced_shares,
+    )
+    personalized_candidates.append(balanced_candidate)
+
+    stability_shares = _generate_stability_shares(planning, balanced_shares)
+    if not _shares_are_close(stability_shares, balanced_shares):
+        personalized_candidates.append(
+            _build_personalized_candidate(
                 interview=interview,
                 planning=planning,
                 rate_table=rate_table,
-                basket=basket,
+                label="Tailored Mix – Stability",
+                shares=stability_shares,
             )
         )
 
-    recommended = _build_recommended_candidate(interview, planning, rate_table)
-    candidates.append(recommended)
+    low_payment_shares = _generate_low_payment_shares(planning, balanced_shares)
+    if all(
+        not _shares_are_close(low_payment_shares, candidate.shares)
+        for candidate in personalized_candidates
+    ):
+        personalized_candidates.append(
+            _build_personalized_candidate(
+                interview=interview,
+                planning=planning,
+                rate_table=rate_table,
+                label="Tailored Mix – Low Payment",
+                shares=low_payment_shares,
+            )
+        )
+
+    candidates: List[OptimizationCandidate] = personalized_candidates
 
     (
         engine_recommended_index,

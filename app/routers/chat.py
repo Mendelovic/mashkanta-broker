@@ -210,27 +210,24 @@ def _gather_session_state(
 def _build_optimization_payload(
     optimization_result,
 ) -> Tuple[
-    Optional[List["CandidateSummary"]],
-    Optional[List["ComparisonRow"]],
+    List["CandidateSummary"],
+    List["ComparisonRow"],
     Optional["OptimizationSummary"],
     Optional[List["OptimizationTermSweepEntry"]],
     Optional[int],
     Optional[int],
 ]:
     if optimization_result is None:
-        return None, None, None, None, None, None
+        return [], [], None, None, None, None
 
     candidate_payloads = format_candidates(optimization_result)
     optimization_matrix = [
         ComparisonRow(**row) for row in format_comparison_matrix(optimization_result)
     ]
 
-    candidate_list: List[CandidateSummary] = [
+    candidate_models: List[CandidateSummary] = [
         build_candidate_summary(item) for item in candidate_payloads
     ]
-    candidate_models: Optional[List[CandidateSummary]] = (
-        candidate_list if candidate_list else None
-    )
 
     optimization_summary: Optional[OptimizationSummary] = None
     engine_recommended_index: Optional[int] = None
