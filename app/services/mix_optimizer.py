@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Dict, List, Tuple
 
 from app.configuration.menu_loader import load_average_menu_rates
@@ -12,6 +13,7 @@ from app.domain.schemas import (
     OptimizationResult,
     PlanningContext,
     RateAnchor,
+    TermSweepEntry,
     TrackShares,
     TrackDetail,
     PaymentSensitivity,
@@ -307,7 +309,7 @@ def _soft_cap_notes(
         )
 
     cpi_share = shares.fixed_cpi + shares.variable_cpi
-    if cpi_share > caps.cpi_share_max + 1e-6:
+    if caps.cpi_share_max is not None and cpi_share > caps.cpi_share_max + 1e-6:
         notes.append(
             f"CPI exposure {cpi_share * 100:.1f}% exceeds comfort cap {caps.cpi_share_max * 100:.0f}%."
         )
@@ -318,7 +320,7 @@ def _soft_cap_notes(
         and metrics.highest_expected_payment_nis > payment_ceiling + 1e-6
     ):
         notes.append(
-            "Highest expected payment ₪{peak:,.0f} exceeds comfort ceiling ₪{ceiling:,.0f}.".format(
+            "Peak payment ₪{peak:,.0f} exceeds the agreed stress ceiling ₪{ceiling:,.0f}.".format(
                 peak=metrics.highest_expected_payment_nis,
                 ceiling=payment_ceiling,
             )
@@ -397,23 +399,51 @@ def _compute_metrics(
         )
         sensitivity_payments[label] = payment
 
-    stress_payment = (
-        max([monthly_payment, *sensitivity_payments.values()])
-        if sensitivity_payments
-        else monthly_payment
-    )
+    stress_payment = monthly_payment
+    if sensitivity_payments:
+        stress_payment = max(stress_payment, *sensitivity_payments.values())
 
-    highest_expected_payment = max(
-        [monthly_payment, *scenario_payments.values(), *sensitivity_payments.values()]
-    )
-    highest_expected_payment_note = "Highest expected payment assumes regulator stress path (CPI +2% path or Prime +3%)."
-
+    highest_expected_payment = monthly_payment
+    peak_payment_driver = "base"
+    peak_payment_month = 1
     months = max(term_years * 12, 1)
+
+    def _update_peak(candidate_payment: float, driver: str, month: int) -> None:
+        nonlocal highest_expected_payment, peak_payment_driver, peak_payment_month
+        if candidate_payment > highest_expected_payment + 1e-6:
+            highest_expected_payment = candidate_payment
+            peak_payment_driver = driver
+            peak_payment_month = month
+
+    for name, payment in scenario_payments.items():
+        _update_peak(payment, f"scenario_{name}", min(months, 60))
+
+    for label, payment in sensitivity_payments.items():
+        _update_peak(payment, f"sensitivity_{label}", 1)
+
+    _update_peak(stress_payment, "stress_prime", 1)
+
+    if peak_payment_driver.startswith("scenario"):
+        highest_expected_payment_note = "Peak payment reflects the Bank of Israel disclosure path (Prime +3% / CPI +2%)."
+    elif peak_payment_driver.startswith("sensitivity_prime_"):
+        highest_expected_payment_note = (
+            "Peak payment assumes an immediate prime shock "
+            f"{peak_payment_driver.split('_')[-1]} from the disclosure sensitivity."
+        )
+    elif peak_payment_driver == "stress_prime":
+        highest_expected_payment_note = (
+            "Peak payment equals the disclosed stress payment (Prime +3%)."
+        )
+    else:
+        highest_expected_payment_note = (
+            "Peak payment matches the base scenario with no rate shocks."
+        )
+
     peak_pti = (highest_expected_payment + obligations) / income
     variable_share_pct = (shares.variable_prime + shares.variable_cpi) * 100
     cpi_share_pct = (shares.fixed_cpi + shares.variable_cpi) * 100
     ltv_ratio = (loan_amount / property_value) if property_value > 0 else 0.0
-    five_year_cost = expected_weighted_payment * min(months, 60)
+    five_year_total_payment = expected_weighted_payment * min(months, 60)
     total_weighted_cost = expected_weighted_payment * months
 
     prepayment_map = _extract_prepayment_map(planning)
@@ -438,7 +468,9 @@ def _compute_metrics(
         expected_weighted_payment_nis=expected_weighted_payment,
         highest_expected_payment_nis=highest_expected_payment,
         highest_expected_payment_note=highest_expected_payment_note,
-        five_year_cost_nis=five_year_cost,
+        peak_payment_month=peak_payment_month,
+        peak_payment_driver=peak_payment_driver,
+        five_year_total_payment_nis=five_year_total_payment,
         total_weighted_cost_nis=total_weighted_cost,
         variable_share_pct=variable_share_pct,
         cpi_share_pct=cpi_share_pct,
@@ -447,6 +479,47 @@ def _compute_metrics(
         track_details=track_details,
         payment_sensitivity=sensitivity_entries,
     )
+
+
+def _build_term_sweep(
+    loan_amount: float,
+    net_income: float,
+    existing_obligations: float,
+    property_value: float,
+    planning: PlanningContext,
+    shares: TrackShares,
+    rate_table: Dict[str, float],
+    base_term_years: int,
+    base_metrics: MixMetrics,
+) -> List[TermSweepEntry]:
+    candidate_terms = {15, 20, 25, base_term_years}
+    sweep_terms = sorted(term for term in candidate_terms if 5 <= term <= 30)
+    entries: List[TermSweepEntry] = []
+    for term in sweep_terms:
+        if term == base_term_years:
+            metrics = base_metrics
+        else:
+            metrics = _compute_metrics(
+                loan_amount,
+                term,
+                net_income,
+                existing_obligations,
+                property_value,
+                planning,
+                shares,
+                rate_table,
+            )
+        entries.append(
+            TermSweepEntry(
+                term_years=term,
+                monthly_payment_nis=metrics.monthly_payment_nis,
+                stress_payment_nis=metrics.max_payment_under_stress,
+                expected_weighted_payment_nis=metrics.expected_weighted_payment_nis,
+                pti_ratio=metrics.pti_ratio,
+                pti_ratio_peak=metrics.pti_ratio_peak,
+            )
+        )
+    return entries
 
 
 def _score_candidate(
@@ -474,12 +547,16 @@ def _build_recommended_candidate(
 
     variable_cap = min(planning.soft_caps.variable_share_max, 0.66)
     cpi_cap = planning.soft_caps.cpi_share_max
+    effective_cpi_cap = cpi_cap if cpi_cap is not None else 1.0
 
-    variable_cpi = min(variable_cap, cpi_cap * 0.5)
+    variable_cpi = min(variable_cap, effective_cpi_cap * 0.5)
     variable_prime = max(variable_cap - variable_cpi, 0.0)
 
     fixed_remaining = max(1.0 - (variable_prime + variable_cpi), 0.0)
-    fixed_cpi = min(cpi_cap - variable_cpi, max(fixed_remaining * 0.25, 0.0))
+    if cpi_cap is not None:
+        fixed_cpi = min(cpi_cap - variable_cpi, max(fixed_remaining * 0.25, 0.0))
+    else:
+        fixed_cpi = max(fixed_remaining * 0.25, 0.0)
     fixed_unindexed = max(1.0 - (variable_prime + variable_cpi + fixed_cpi), 0.0)
 
     shares = TrackShares(
@@ -499,6 +576,7 @@ def _build_recommended_candidate(
         shares,
         rate_table,
     )
+    variable_share = shares.variable_prime + shares.variable_cpi
     feasibility = run_feasibility_checks(
         property_price=interview.property.value_nis,
         down_payment_available=interview.property.value_nis - loan_amount,
@@ -511,6 +589,7 @@ def _build_recommended_candidate(
         assessed_payment=metrics.monthly_payment_nis,
         peak_payment=metrics.highest_expected_payment_nis,
         borrower_age_years=interview.borrower.age_years,
+        variable_share=variable_share,
     )
 
     notes: List[str] = []
@@ -564,6 +643,7 @@ def optimize_mixes(
             assessed_payment=metrics.monthly_payment_nis,
             peak_payment=metrics.highest_expected_payment_nis,
             borrower_age_years=interview.borrower.age_years,
+            variable_share=basket.shares.variable_prime + basket.shares.variable_cpi,
         )
         notes = _soft_cap_notes(planning, basket.shares, metrics)
         if feasibility.issues:
@@ -582,7 +662,37 @@ def optimize_mixes(
     candidates.append(recommended)
 
     scores = [_score_candidate(c, planning) for c in candidates]
-    recommended_index = min(range(len(scores)), key=scores.__getitem__)
+    engine_recommended_index = min(range(len(scores)), key=scores.__getitem__)
+
+    def _violates_soft_caps(candidate: OptimizationCandidate) -> bool:
+        for note in candidate.notes:
+            lowered = note.lower()
+            if "exceeds comfort cap" in lowered or "exceeds comfort ceiling" in lowered:
+                return True
+        feasibility = candidate.feasibility
+        if feasibility and feasibility.issues:
+            illegal_codes = {
+                "variable_share_exceeds_limit",
+                "loan_term_exceeds_limit",
+            }
+            if any(issue.code in illegal_codes for issue in feasibility.issues):
+                return True
+        return False
+
+    advisor_candidates = [
+        idx
+        for idx, candidate in enumerate(candidates)
+        if not _violates_soft_caps(candidate)
+    ]
+    if advisor_candidates:
+        advisor_recommended_index = min(
+            advisor_candidates,
+            key=lambda idx: scores[idx],
+        )
+    else:
+        advisor_recommended_index = engine_recommended_index
+
+    recommended_index = advisor_recommended_index
 
     assumptions = {
         "loan_amount": loan_amount,
@@ -591,8 +701,62 @@ def optimize_mixes(
         "existing_loans": fixed_expenses,
     }
 
+    advisor_candidate = candidates[advisor_recommended_index]
+    term_sweep = _build_term_sweep(
+        loan_amount=loan_amount,
+        net_income=net_income,
+        existing_obligations=fixed_expenses,
+        property_value=property_value,
+        planning=planning,
+        shares=advisor_candidate.shares,
+        rate_table=rate_table,
+        base_term_years=term_years,
+        base_metrics=advisor_candidate.metrics,
+    )
+
+    anchor_rates_pct = {
+        anchor.value: BASE_ANCHOR_RATES[anchor] * 100 for anchor in BASE_ANCHOR_RATES
+    }
+    rate_table_snapshot_pct = {key: value * 100 for key, value in rate_table.items()}
+    assumptions.update(
+        {
+            "anchor_rates_pct": anchor_rates_pct,
+            "rate_table_snapshot_pct": rate_table_snapshot_pct,
+            "rate_table_captured_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+    def _dominates(left: OptimizationCandidate, right: OptimizationCandidate) -> bool:
+        lm, rm = left.metrics, right.metrics
+        return (
+            lm.monthly_payment_nis <= rm.monthly_payment_nis + 1e-6
+            and lm.highest_expected_payment_nis
+            <= rm.highest_expected_payment_nis + 1e-6
+            and (
+                lm.monthly_payment_nis < rm.monthly_payment_nis - 1e-6
+                or lm.highest_expected_payment_nis
+                < rm.highest_expected_payment_nis - 1e-6
+            )
+        )
+
+    pareto_alerts: List[str] = []
+    for idx, candidate in enumerate(candidates):
+        if idx == recommended_index:
+            continue
+        if _dominates(candidate, advisor_candidate):
+            pareto_alerts.append(
+                f"{candidate.label} dominates recommended mix on opening and peak payments."
+            )
+    if pareto_alerts:
+        assumptions["pareto_alerts"] = pareto_alerts
+    else:
+        assumptions["pareto_alerts"] = []
+
     return OptimizationResult(
         candidates=candidates,
         recommended_index=recommended_index,
+        engine_recommended_index=engine_recommended_index,
+        advisor_recommended_index=advisor_recommended_index,
+        term_sweep=term_sweep,
         assumptions=assumptions,
     )

@@ -26,8 +26,14 @@ def _compute_weights(submission: IntakeSubmission) -> PreferenceWeights:
     prefs = submission.record.preferences
 
     stability_weight = _clamp(prefs.stability_vs_cost / 10.0)
-    cpi_weight = _clamp((10 - prefs.cpi_tolerance) / 10.0)
-    prepay_weight = _clamp((10 - prefs.prime_exposure_preference) / 10.0)
+    cpi_slider = prefs.cpi_tolerance if prefs.cpi_tolerance is not None else 5
+    prime_slider = (
+        prefs.prime_exposure_preference
+        if prefs.prime_exposure_preference is not None
+        else 5
+    )
+    cpi_weight = _clamp(cpi_slider / 10.0)
+    prepay_weight = _clamp((10 - prime_slider) / 10.0)
 
     total = stability_weight + cpi_weight + prepay_weight
     if total <= 1e-6:
@@ -48,15 +54,17 @@ def _compute_soft_caps(submission: IntakeSubmission) -> SoftCaps:
     prefs = submission.record.preferences
 
     variable_cap = _clamp(1.0 - prefs.stability_vs_cost / 10.0, 0.3, 0.66)
-    cpi_cap = _clamp(prefs.cpi_tolerance / 10.0, 0.2, 1.0)
+    if prefs.cpi_tolerance is None:
+        cpi_cap = None
+    elif prefs.cpi_tolerance <= 2:
+        cpi_cap = None
+    elif prefs.cpi_tolerance >= 7:
+        cpi_cap = None
+    else:
+        normalized = _clamp(prefs.cpi_tolerance / 10.0, 0.2, 1.0)
+        cpi_cap = normalized
 
-    payment_ceiling = prefs.max_payment_nis
-    if prefs.red_line_payment_nis:
-        payment_ceiling = (
-            min(payment_ceiling, prefs.red_line_payment_nis)
-            if payment_ceiling
-            else prefs.red_line_payment_nis
-        )
+    payment_ceiling = prefs.red_line_payment_nis if prefs.red_line_payment_nis else None
 
     return SoftCaps(
         variable_share_max=variable_cap,
@@ -108,7 +116,11 @@ def _apply_future_plans(
 def _build_prepayment_schedule(submission: IntakeSubmission) -> List[PrepaymentEvent]:
     prefs = submission.record.preferences
     schedule: List[PrepaymentEvent] = []
-    if prefs.expected_prepay_pct > 0 and prefs.expected_prepay_month:
+    if (
+        prefs.prepayment_confirmed
+        and prefs.expected_prepay_pct > 0
+        and prefs.expected_prepay_month
+    ):
         schedule.append(
             PrepaymentEvent(
                 month=prefs.expected_prepay_month,

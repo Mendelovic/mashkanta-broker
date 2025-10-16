@@ -28,6 +28,9 @@ _DEAL_TYPE_MAP = {
     "investment": PropertyType.INVESTMENT,
 }
 
+MAX_LEGAL_VARIABLE_SHARE = 2 / 3  # 66.67%
+MAX_LEGAL_TERM_YEARS = 30
+
 
 def _resolve_property_type(
     property_type: str | None, deal_type: str | None, occupancy: str | None
@@ -63,6 +66,7 @@ def run_feasibility_checks(
     assessed_payment: float | None = None,
     peak_payment: float | None = None,
     borrower_age_years: int | None = None,
+    variable_share: float | None = None,
 ) -> FeasibilityResult:
     """Run quick LTV/PTI checks to detect obviously infeasible requests."""
 
@@ -82,7 +86,8 @@ def run_feasibility_checks(
             pti_limit=1.0,
             issues=issues,
         )
-    loan_years = max(min(loan_years or 25, 40), 1)
+    requested_term_years = loan_years or 25
+    loan_years = max(min(requested_term_years, 40), 1)
     prop_type = _resolve_property_type(property_type, deal_type, occupancy)
 
     if property_type:
@@ -119,12 +124,20 @@ def run_feasibility_checks(
     pti_ratio = calc.debt_to_income_ratio
     pti_limit = MortgageEligibilityEvaluator.PTI_LIMITS[RiskProfile.STANDARD]
     income_for_ratio = max(income, 1.0)
+    monthly_payment_basis = assessed_payment
+    if monthly_payment_basis is None:
+        monthly_payment_basis = calc.assessed_monthly_payment
+    monthly_payment_basis = max(monthly_payment_basis or 0.0, 0.0)
+    pti_ratio = (monthly_payment_basis + existing_obligations) / income_for_ratio
     if peak_payment is not None:
         pti_ratio_peak = (
             max(peak_payment, 0.0) + existing_obligations
         ) / income_for_ratio
     else:
         pti_ratio_peak = pti_ratio
+
+    variable_share_limit_pct = MAX_LEGAL_VARIABLE_SHARE * 100
+    variable_share_pct = variable_share * 100 if variable_share is not None else None
 
     if ltv_ratio > ltv_limit + 1e-6:
         required_down_payment = property_price * (1 - ltv_limit)
@@ -158,6 +171,33 @@ def run_feasibility_checks(
             )
         )
 
+    if (
+        variable_share_pct is not None
+        and variable_share_pct > variable_share_limit_pct + 1e-6
+    ):
+        issues.append(
+            FeasibilityIssue(
+                code="variable_share_exceeds_limit",
+                message="חשיפה למסלולים משתנים חורגת מ-2/3 מההלוואה ומפרה את הוראות בנק ישראל.",
+                details={
+                    "variable_share_pct": round(variable_share_pct, 2),
+                    "variable_share_limit_pct": variable_share_limit_pct,
+                },
+            )
+        )
+
+    if requested_term_years > MAX_LEGAL_TERM_YEARS:
+        issues.append(
+            FeasibilityIssue(
+                code="loan_term_exceeds_limit",
+                message="תקופת ההלוואה חורגת מ-30 שנים, יש לבחור תקופה קצרה יותר.",
+                details={
+                    "requested_term_years": requested_term_years,
+                    "term_limit_years": MAX_LEGAL_TERM_YEARS,
+                },
+            )
+        )
+
     if borrower_age_years is not None:
         age_at_maturity = borrower_age_years + loan_years
         if age_at_maturity > 85:
@@ -184,5 +224,9 @@ def run_feasibility_checks(
         pti_ratio=pti_ratio,
         pti_limit=pti_limit,
         pti_ratio_peak=pti_ratio_peak,
+        variable_share_pct=variable_share_pct,
+        variable_share_limit_pct=variable_share_limit_pct,
+        loan_term_years=requested_term_years,
+        loan_term_limit_years=MAX_LEGAL_TERM_YEARS,
         issues=issues,
     )

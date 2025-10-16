@@ -6,7 +6,14 @@ from datetime import date
 from enum import Enum
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, PositiveFloat, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PositiveFloat,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 
 AgeRange = Annotated[int, Field(ge=18, le=85)]
@@ -19,6 +26,61 @@ FutureTimeframe = Annotated[int, Field(ge=0, le=240)]
 PreferenceScore = Annotated[float, Field(ge=0.0, le=10.0)]
 PreferenceWeight = Annotated[float, Field(ge=0.0, le=1.0)]
 VolatilityFactor = Annotated[float, Field(ge=0.0, le=1.0)]
+
+
+def _parse_currency_amount(value: Any) -> Optional[float]:
+    """Parse various user-entered currency representations into a float."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        cleaned = cleaned.replace("₪", "").replace(",", "").replace(" ", "")
+        multiplier = 1.0
+        if cleaned and cleaned[-1] in {"k", "K"}:
+            multiplier = 1_000.0
+            cleaned = cleaned[:-1]
+        elif cleaned and cleaned[-1] in {"m", "M"}:
+            multiplier = 1_000_000.0
+            cleaned = cleaned[:-1]
+        try:
+            return float(cleaned) * multiplier
+        except ValueError as exc:  # pragma: no cover - defensive
+            raise ValueError(f"Invalid currency amount: {value}") from exc
+    raise TypeError(f"Unsupported currency type: {type(value)!r}")  # pragma: no cover
+
+
+def _parse_range_bounds(raw: str) -> Optional[tuple[float, float]]:
+    separators = ("-", "–", "—", "עד", "to", "עד")
+    if not any(sep in raw for sep in separators):
+        return None
+
+    import re
+
+    parts = [
+        part.strip()
+        for part in re.split(r"\s*(?:-|–|—|עד|עד|to)\s*", raw, maxsplit=2)
+        if part.strip()
+    ]
+    if len(parts) >= 2:
+        try:
+            lower = _parse_currency_amount(parts[0])
+            upper = _parse_currency_amount(parts[1])
+        except (TypeError, ValueError):
+            return None
+        if lower is None or upper is None:
+            return None
+        lower, upper = sorted((lower, upper))
+        return lower, upper
+    if len(parts) == 1 and "עד" in raw:
+        upper = _parse_currency_amount(parts[0])
+        if upper is None:
+            return None
+        return upper * 0.9, upper
+    return None
 
 
 class ResidencyStatus(str, Enum):
@@ -111,6 +173,17 @@ class BorrowerProfile(BaseModel):
         description="0=stable, 1=highly volatile. Used to buffer payment stress.",
     )
     notes: Optional[str] = None
+    equity_provenance: Optional[str] = Field(
+        default=None,
+        description="Source of equity (savings, gifts, sale, etc.) and transfer status.",
+    )
+    gift_letter_required: Optional[bool] = Field(
+        default=None, description="True if a gift letter will be needed."
+    )
+    employer_stability_notes: Optional[str] = Field(
+        default=None,
+        description="Employer type, sector stability, probation status, and tenure context.",
+    )
 
     @model_validator(mode="after")
     def _validate_employment_fields(self) -> "BorrowerProfile":
@@ -134,6 +207,10 @@ class PropertyDetails(BaseModel):
     )
     builder_name: Optional[str] = None
     appraisal_value_nis: Optional[PositiveFloat] = None
+    title_notes: Optional[str] = Field(
+        default=None,
+        description="Notes on rights/registration (Tabu, Minhal, Hevra Meshakenet, TAMA status, easements).",
+    )
 
 
 class LoanAsk(BaseModel):
@@ -160,20 +237,61 @@ class Preferences(BaseModel):
     """Collects structured and fuzzy preferences."""
 
     stability_vs_cost: SliderInt
-    cpi_tolerance: SliderInt
-    prime_exposure_preference: SliderInt
-    max_payment_nis: PositiveFloat
-    red_line_payment_nis: PositiveFloat
+    cpi_tolerance: Optional[SliderInt] = None
+    prime_exposure_preference: Optional[SliderInt] = None
+    max_payment_nis: Optional[PositiveFloat] = None
+    red_line_payment_nis: Optional[PositiveFloat] = None
     expected_prepay_pct: float = Field(default=0.0, ge=0.0, le=1.0)
     expected_prepay_month: Optional[PrepayMonth] = None
+    prepayment_confirmed: bool = False
     rate_view: RateView = RateView.FLAT
     additional_signals: List[PreferenceSignal] = Field(default_factory=list)
 
+    _MIN_PAYMENT_AMOUNT_NIS = 100.0
+
+    @field_validator("max_payment_nis", "red_line_payment_nis", mode="before")
+    @classmethod
+    def _coerce_payment_amount(
+        cls, value: Any, info: ValidationInfo
+    ) -> Optional[float]:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        if isinstance(value, str):
+            bounds = _parse_range_bounds(value)
+            if bounds is not None:
+                lower, upper = bounds
+                if info.field_name == "max_payment_nis":
+                    return (lower + upper) / 2.0
+                return upper
+
+        parsed = _parse_currency_amount(value)
+        return parsed
+
     @model_validator(mode="after")
     def _validate_payment_targets(self) -> "Preferences":
-        if self.red_line_payment_nis < self.max_payment_nis:
+        if (
+            self.red_line_payment_nis is not None
+            and self.max_payment_nis is not None
+            and self.red_line_payment_nis < self.max_payment_nis
+        ):
             raise ValueError(
                 "red_line_payment_nis must be greater than or equal to max_payment_nis"
+            )
+        if (
+            self.max_payment_nis is not None
+            and self.max_payment_nis < self._MIN_PAYMENT_AMOUNT_NIS
+        ):
+            raise ValueError(
+                f"max_payment_nis must be at least {self._MIN_PAYMENT_AMOUNT_NIS:.0f} NIS."
+            )
+        if (
+            self.red_line_payment_nis is not None
+            and self.red_line_payment_nis < self._MIN_PAYMENT_AMOUNT_NIS
+        ):
+            raise ValueError(
+                f"red_line_payment_nis must be at least {self._MIN_PAYMENT_AMOUNT_NIS:.0f} NIS."
             )
         return self
 
@@ -290,7 +408,7 @@ class SoftCaps(BaseModel):
     """Soft caps derived from preferences."""
 
     variable_share_max: float
-    cpi_share_max: float
+    cpi_share_max: Optional[float] = None
     payment_ceiling_nis: Optional[float] = None
 
 
@@ -340,6 +458,10 @@ class FeasibilityResult(BaseModel):
     pti_ratio: float
     pti_limit: float
     pti_ratio_peak: Optional[float] = None
+    variable_share_pct: Optional[float] = None
+    variable_share_limit_pct: Optional[float] = None
+    loan_term_years: Optional[int] = None
+    loan_term_limit_years: Optional[int] = None
     issues: List[FeasibilityIssue] = Field(default_factory=list)
 
 
@@ -400,7 +522,9 @@ class MixMetrics(BaseModel):
         default=None,
         description="Explanation of the highest expected payment disclosure.",
     )
-    five_year_cost_nis: float
+    peak_payment_month: Optional[int] = None
+    peak_payment_driver: Optional[str] = None
+    five_year_total_payment_nis: float
     total_weighted_cost_nis: float
     variable_share_pct: float
     cpi_share_pct: float
@@ -408,6 +532,17 @@ class MixMetrics(BaseModel):
     prepayment_fee_exposure: str
     track_details: List["TrackDetail"]
     payment_sensitivity: List["PaymentSensitivity"]
+
+
+class TermSweepEntry(BaseModel):
+    """Summary metrics for a specific term length."""
+
+    term_years: int
+    monthly_payment_nis: float
+    stress_payment_nis: float
+    expected_weighted_payment_nis: float
+    pti_ratio: float
+    pti_ratio_peak: float
 
 
 class OptimizationCandidate(BaseModel):
@@ -425,4 +560,7 @@ class OptimizationResult(BaseModel):
 
     candidates: List[OptimizationCandidate]
     recommended_index: int
+    engine_recommended_index: Optional[int] = None
+    advisor_recommended_index: Optional[int] = None
+    term_sweep: List[TermSweepEntry] = Field(default_factory=list)
     assumptions: Dict[str, Any] = Field(default_factory=dict)

@@ -91,24 +91,33 @@ class MortgageEligibilityEvaluator:
 
         ltv_limit = cls.LTV_LIMITS[property_type]
         max_loan_by_ltv = property_price * ltv_limit
+        actual_loan_amount = max(property_price - max(down_payment_available, 0.0), 0.0)
 
         avg_interest_rate = 0.04 / 12
         months = max(years, 1) * 12
 
-        if avg_interest_rate > 0:
-            annuity_factor = (
-                1 - (1 + avg_interest_rate) ** -months
-            ) / avg_interest_rate
-            max_loan_by_payment = max_monthly_payment * annuity_factor
+        if (
+            monthly_payment_override is not None
+            and monthly_payment_override > 1e-6
+            and actual_loan_amount > 0
+        ):
+            max_loan_by_payment = (
+                actual_loan_amount * max_monthly_payment / monthly_payment_override
+            )
         else:
-            max_loan_by_payment = max_monthly_payment * months
+            if avg_interest_rate > 0:
+                annuity_factor = (
+                    1 - (1 + avg_interest_rate) ** -months
+                ) / avg_interest_rate
+                max_loan_by_payment = max_monthly_payment * annuity_factor
+            else:
+                max_loan_by_payment = max_monthly_payment * months
 
         max_loan_amount = min(max_loan_by_payment, max_loan_by_ltv)
 
         required_down_payment = max(property_price - max_loan_amount, 0.0)
         is_eligible = down_payment_available >= required_down_payment
 
-        actual_loan_amount = max(property_price - down_payment_available, 0.0)
         if monthly_payment_override is not None:
             actual_monthly_payment = max(monthly_payment_override, 0.0)
         else:

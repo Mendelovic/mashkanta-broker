@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from app.domain.schemas import OptimizationCandidate, OptimizationResult
+from app.domain.schemas import OptimizationCandidate, OptimizationResult, TermSweepEntry
 
 
 def _format_currency(value: float) -> str:
@@ -47,8 +47,10 @@ def _metrics_snapshot(candidate: OptimizationCandidate) -> Dict[str, Any]:
         "pti_ratio_display": _format_pct(metrics.pti_ratio * 100),
         "pti_ratio_peak": metrics.pti_ratio_peak,
         "pti_ratio_peak_display": _format_pct(metrics.pti_ratio_peak * 100),
-        "five_year_cost_nis": metrics.five_year_cost_nis,
-        "five_year_cost_display": _format_currency(metrics.five_year_cost_nis),
+        "five_year_total_payment_nis": metrics.five_year_total_payment_nis,
+        "five_year_total_payment_display": _format_currency(
+            metrics.five_year_total_payment_nis
+        ),
         "total_weighted_cost_nis": metrics.total_weighted_cost_nis,
         "variable_share_pct": metrics.variable_share_pct,
         "variable_share_display": _format_pct(metrics.variable_share_pct),
@@ -57,6 +59,8 @@ def _metrics_snapshot(candidate: OptimizationCandidate) -> Dict[str, Any]:
         "ltv_ratio": metrics.ltv_ratio,
         "ltv_ratio_display": _format_pct(metrics.ltv_ratio * 100),
         "prepayment_fee_exposure": metrics.prepayment_fee_exposure,
+        "peak_payment_month": metrics.peak_payment_month,
+        "peak_payment_driver": metrics.peak_payment_driver,
         "payment_sensitivity": [
             {"scenario": item.scenario, "payment_nis": item.payment_nis}
             for item in metrics.payment_sensitivity
@@ -89,6 +93,10 @@ def _feasibility_snapshot(candidate: OptimizationCandidate) -> Dict[str, Any] | 
         "pti_ratio": feasibility.pti_ratio,
         "pti_ratio_peak": feasibility.pti_ratio_peak,
         "pti_limit": feasibility.pti_limit,
+        "variable_share_pct": feasibility.variable_share_pct,
+        "variable_share_limit_pct": feasibility.variable_share_limit_pct,
+        "loan_term_years": feasibility.loan_term_years,
+        "loan_term_limit_years": feasibility.loan_term_limit_years,
         "issues": [issue.code for issue in feasibility.issues],
     }
 
@@ -103,6 +111,12 @@ def format_candidates(result: OptimizationResult) -> List[Dict[str, Any]]:
                 "label": candidate.label,
                 "index": index,
                 "is_recommended": index == result.recommended_index,
+                "is_engine_recommended": index
+                == (
+                    result.engine_recommended_index
+                    if result.engine_recommended_index is not None
+                    else result.recommended_index
+                ),
                 "shares": _share_percentages(candidate),
                 "metrics": _metrics_snapshot(candidate),
                 "track_details": _track_details_snapshot(candidate),
@@ -142,12 +156,39 @@ def format_comparison_matrix(result: OptimizationResult) -> List[Dict[str, Any]]
                 "variable_share_display": _format_pct(metrics.variable_share_pct),
                 "cpi_share_pct": metrics.cpi_share_pct,
                 "cpi_share_display": _format_pct(metrics.cpi_share_pct),
-                "five_year_cost_nis": metrics.five_year_cost_nis,
-                "five_year_cost_display": _format_currency(metrics.five_year_cost_nis),
+                "five_year_total_payment_nis": metrics.five_year_total_payment_nis,
+                "five_year_total_payment_display": _format_currency(
+                    metrics.five_year_total_payment_nis
+                ),
                 "prepayment_fee_exposure": metrics.prepayment_fee_exposure,
+                "peak_payment_month": metrics.peak_payment_month,
+                "peak_payment_driver": metrics.peak_payment_driver,
             }
         )
     return rows
 
 
-__all__ = ["format_candidates", "format_comparison_matrix"]
+def format_term_sweep(entries: List[TermSweepEntry]) -> List[Dict[str, Any]]:
+    formatted: List[Dict[str, Any]] = []
+    for entry in entries:
+        formatted.append(
+            {
+                "term_years": entry.term_years,
+                "monthly_payment_nis": entry.monthly_payment_nis,
+                "monthly_payment_display": _format_currency(entry.monthly_payment_nis),
+                "stress_payment_nis": entry.stress_payment_nis,
+                "stress_payment_display": _format_currency(entry.stress_payment_nis),
+                "expected_weighted_payment_nis": entry.expected_weighted_payment_nis,
+                "expected_weighted_payment_display": _format_currency(
+                    entry.expected_weighted_payment_nis
+                ),
+                "pti_ratio": entry.pti_ratio,
+                "pti_ratio_display": _format_pct(entry.pti_ratio * 100),
+                "pti_ratio_peak": entry.pti_ratio_peak,
+                "pti_ratio_peak_display": _format_pct(entry.pti_ratio_peak * 100),
+            }
+        )
+    return formatted
+
+
+__all__ = ["format_candidates", "format_comparison_matrix", "format_term_sweep"]

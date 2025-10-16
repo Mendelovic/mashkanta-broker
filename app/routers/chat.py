@@ -24,6 +24,7 @@ from ..services.session_manager import get_or_create_session
 from ..services.optimization_formatter import (
     format_candidates,
     format_comparison_matrix,
+    format_term_sweep,
 )
 
 
@@ -71,12 +72,14 @@ class CandidateMetrics(BaseModel):
     stress_payment_nis: float
     pti_ratio: float
     pti_ratio_peak: float
-    five_year_cost_nis: float
+    five_year_total_payment_nis: float
     total_weighted_cost_nis: float
     variable_share_pct: float
     cpi_share_pct: float
     ltv_ratio: float
     prepayment_fee_exposure: str
+    peak_payment_month: Optional[int] = None
+    peak_payment_driver: Optional[str] = None
     sensitivities: List[CandidateSensitivity]
     highest_expected_payment_note: Optional[str] = None
 
@@ -104,6 +107,7 @@ class CandidateSummary(BaseModel):
     label: str
     index: int
     is_recommended: bool
+    is_engine_recommended: bool
     shares: CandidateShares
     metrics: CandidateMetrics
     track_details: List[CandidateTrackDetail]
@@ -152,6 +156,7 @@ def build_candidate_summary(item: dict[str, Any]) -> CandidateSummary:
         label=item.get("label", ""),
         index=item.get("index", 0),
         is_recommended=bool(item.get("is_recommended", False)),
+        is_engine_recommended=bool(item.get("is_engine_recommended", False)),
         shares=CandidateShares(
             fixed_unindexed_pct=float(shares.get("fixed_unindexed_pct", 0.0)),
             fixed_cpi_pct=float(shares.get("fixed_cpi_pct", 0.0)),
@@ -175,12 +180,24 @@ def build_candidate_summary(item: dict[str, Any]) -> CandidateSummary:
             stress_payment_nis=float(metrics.get("stress_payment_nis", 0.0)),
             pti_ratio=float(metrics.get("pti_ratio", 0.0)),
             pti_ratio_peak=float(metrics.get("pti_ratio_peak", 0.0)),
-            five_year_cost_nis=float(metrics.get("five_year_cost_nis", 0.0)),
+            five_year_total_payment_nis=float(
+                metrics.get("five_year_total_payment_nis", 0.0)
+            ),
             total_weighted_cost_nis=float(metrics.get("total_weighted_cost_nis", 0.0)),
             variable_share_pct=float(metrics.get("variable_share_pct", 0.0)),
             cpi_share_pct=float(metrics.get("cpi_share_pct", 0.0)),
             ltv_ratio=float(metrics.get("ltv_ratio", 0.0)),
             prepayment_fee_exposure=str(metrics.get("prepayment_fee_exposure", "")),
+            peak_payment_month=(
+                int(metrics["peak_payment_month"])
+                if metrics.get("peak_payment_month") is not None
+                else None
+            ),
+            peak_payment_driver=(
+                str(metrics.get("peak_payment_driver"))
+                if metrics.get("peak_payment_driver") is not None
+                else None
+            ),
             sensitivities=sensitivity_models,
         ),
         track_details=track_models,
@@ -201,8 +218,10 @@ class ComparisonRow(BaseModel):
     pti_ratio_peak: float
     variable_share_pct: float
     cpi_share_pct: float
-    five_year_cost_nis: float
+    five_year_total_payment_nis: float
     prepayment_fee_exposure: str
+    peak_payment_month: Optional[int] = None
+    peak_payment_driver: Optional[str] = None
 
 
 class OptimizationSummary(BaseModel):
@@ -215,6 +234,24 @@ class OptimizationSummary(BaseModel):
     pti_ratio: float
     pti_ratio_peak: float
     highest_expected_payment_note: Optional[str] = None
+    peak_payment_month: Optional[int] = None
+    peak_payment_driver: Optional[str] = None
+    engine_label: Optional[str] = None
+    engine_index: Optional[int] = None
+
+
+class OptimizationTermSweepEntry(BaseModel):
+    term_years: int
+    monthly_payment_nis: float
+    monthly_payment_display: str
+    stress_payment_nis: float
+    stress_payment_display: str
+    expected_weighted_payment_nis: float
+    expected_weighted_payment_display: str
+    pti_ratio: float
+    pti_ratio_display: str
+    pti_ratio_peak: float
+    pti_ratio_peak_display: str
 
 
 class ChatResponse(BaseModel):
@@ -230,6 +267,9 @@ class ChatResponse(BaseModel):
     optimization_summary: Optional[OptimizationSummary] = None
     optimization_candidates: Optional[List[CandidateSummary]] = None
     optimization_matrix: Optional[List[ComparisonRow]] = None
+    engine_recommended_index: Optional[int] = None
+    advisor_recommended_index: Optional[int] = None
+    term_sweep: Optional[List[OptimizationTermSweepEntry]] = None
 
 
 # Main endpoint
@@ -352,6 +392,9 @@ async def unified_chat_endpoint(
         optimization_summary: OptimizationSummary | None = None
         optimization_candidates: List[CandidateSummary] | None = None
         optimization_matrix: List[ComparisonRow] | None = None
+        term_sweep_rows: List[OptimizationTermSweepEntry] | None = None
+        engine_recommended_index: Optional[int] = None
+        advisor_recommended_index: Optional[int] = None
         if optimization_result is not None:
             candidate_payloads = format_candidates(optimization_result)
             optimization_matrix = [
@@ -363,9 +406,19 @@ async def unified_chat_endpoint(
                 candidate_models.append(build_candidate_summary(item))
             if candidate_models:
                 optimization_candidates = candidate_models
+                engine_recommended_index = optimization_result.engine_recommended_index
+                advisor_recommended_index = (
+                    optimization_result.advisor_recommended_index
+                    if optimization_result.advisor_recommended_index is not None
+                    else optimization_result.recommended_index
+                )
                 recommended_candidate = next(
                     (c for c in candidate_models if c.is_recommended),
                     candidate_models[0],
+                )
+                engine_candidate = next(
+                    (c for c in candidate_models if c.is_engine_recommended),
+                    recommended_candidate,
                 )
                 optimization_summary = OptimizationSummary(
                     label=recommended_candidate.label,
@@ -377,7 +430,17 @@ async def unified_chat_endpoint(
                     pti_ratio=recommended_candidate.metrics.pti_ratio,
                     pti_ratio_peak=recommended_candidate.metrics.pti_ratio_peak,
                     highest_expected_payment_note=recommended_candidate.metrics.highest_expected_payment_note,
+                    peak_payment_month=recommended_candidate.metrics.peak_payment_month,
+                    peak_payment_driver=recommended_candidate.metrics.peak_payment_driver,
+                    engine_label=engine_candidate.label,
+                    engine_index=engine_candidate.index,
                 )
+
+            if optimization_result.term_sweep:
+                term_sweep_rows = [
+                    OptimizationTermSweepEntry(**row)
+                    for row in format_term_sweep(optimization_result.term_sweep)
+                ]
 
         return ChatResponse(
             response=result.final_output,
@@ -390,6 +453,9 @@ async def unified_chat_endpoint(
             optimization_summary=optimization_summary,
             optimization_candidates=optimization_candidates,
             optimization_matrix=optimization_matrix,
+            engine_recommended_index=engine_recommended_index,
+            advisor_recommended_index=advisor_recommended_index,
+            term_sweep=term_sweep_rows,
         )
 
     except HTTPException:
