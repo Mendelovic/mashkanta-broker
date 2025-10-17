@@ -8,13 +8,11 @@ from app.domain.schemas import (
     InterviewRecord,
     LoanAsk,
     Preferences,
-    PreferenceSignal,
     PropertyDetails,
     Quotes,
     QuoteTrack,
     RateAnchor,
     RateView,
-    ResidencyStatus,
     OccupancyIntent,
     PropertyType,
 )
@@ -23,9 +21,9 @@ from app.domain.schemas import (
 def build_submission() -> IntakeSubmission:
     borrower = BorrowerProfile(
         primary_applicant_name="דן",
-        residency=ResidencyStatus.RESIDENT,
         occupancy=OccupancyIntent.OWN,
         net_income_nis=18_000,
+        rent_expense_nis=0.0,
         fixed_expenses_nis=2_000,
         additional_income_nis=1_500,
         employment_status="מועסק קבוע",
@@ -34,26 +32,18 @@ def build_submission() -> IntakeSubmission:
         age_years=34,
         dependents=0,
         income_volatility_factor=0.2,
-        notes="שכר יציב בעבודה הייטק",
-        equity_provenance="חסכונות + מתנה מההורים, הועבר לבנק",
-        gift_letter_required=False,
-        employer_stability_notes="משרה קבועה בחברת הייטק מעל 5 שנים",
     )
 
     property_details = PropertyDetails(
         type=PropertyType.SINGLE,
         value_nis=1_800_000,
-        address_city="תל אביב",
-        address_region="מרכז",
         is_new_build=False,
         target_close_months=6,
-        title_notes="רישום בטאבו, ללא שעבודים או הערות אזהרה.",
     )
 
     loan = LoanAsk(
         amount_nis=1_200_000,
         term_years=25,
-        currency="NIS",
     )
 
     preferences = Preferences(
@@ -66,13 +56,6 @@ def build_submission() -> IntakeSubmission:
         expected_prepay_month=18,
         prepayment_confirmed=True,
         rate_view=RateView.FLAT,
-        additional_signals=[
-            PreferenceSignal(
-                name="flexibility",
-                score=8,
-                rationale="מבקש אופציה למחזר במקרה של ירידת ריבית",
-            )
-        ],
     )
 
     plans = [
@@ -81,7 +64,6 @@ def build_submission() -> IntakeSubmission:
             timeframe_months=24,
             expected_income_delta_nis=-2_000,
             confidence=0.7,
-            notes="מתכננים הרחבת משפחה בשנתיים הקרובות",
         )
     ]
 

@@ -115,6 +115,7 @@ def run_feasibility_checks(
             ltv_limit=1.0,
             pti_ratio=1.0,
             pti_limit=1.0,
+            pti_ratio_peak=1.0,
             issues=issues,
         )
 

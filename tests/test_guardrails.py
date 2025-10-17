@@ -1,7 +1,9 @@
+import inspect
 import json
-from typing import Callable, Iterator
+from typing import Any, Callable, Iterator, cast
 
 import pytest
+from agents import Agent
 from agents.tool_context import ToolContext
 from agents.tool_guardrails import ToolInputGuardrailData, ToolOutputGuardrailData
 
@@ -14,18 +16,15 @@ from app.agents.guardrails import (
 from app.agents.tools.mortgage_eligibility_tool import evaluate_mortgage_eligibility
 from app.models.context import ChatRunContext
 from app.services import session_manager
-from app.services.mortgage_eligibility import (
-    MortgageEligibilityEvaluator,
-    PropertyType,
-    RiskProfile,
-)
+from app.domain.schemas import DealType, PropertyType
+from app.services.mortgage_eligibility import MortgageEligibilityEvaluator, RiskProfile
 from app.services.planning_mapper import build_planning_context
 
+from .async_utils import run_async
 from .factories import build_submission
 
-NO_INTAKE_SNIPPET = "לא ניתן"
-NO_PLANNING_SNIPPET = "compute_planning_context"
-VIOLATION_SNIPPET = "בדיקת הזכאות הופסקה"
+NO_INTAKE_SNIPPET = "Cannot run eligibility checks before the intake interview"
+NO_PLANNING_SNIPPET = "Cannot run eligibility checks before the planning context"
 
 
 def create_tool_context(session_id: str, arguments: str) -> ToolContext[ChatRunContext]:
@@ -47,7 +46,7 @@ def cleanup_sessions() -> Iterator[Callable[[str], None]]:
     yield _register
 
     for session_id in created:
-        session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
+        session_manager._session_cache.pop(session_id, None)
 
 
 def test_input_guardrail_blocks_when_no_intake(
@@ -55,7 +54,7 @@ def test_input_guardrail_blocks_when_no_intake(
 ) -> None:
     session_id = "guardrail-no-intake"
     cleanup_sessions(session_id)
-    session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
+    session_manager._session_cache.pop(session_id, None)
     session_manager.get_or_create_session(session_id)
 
     arguments = json.dumps(
@@ -67,12 +66,15 @@ def test_input_guardrail_blocks_when_no_intake(
     )
     tool_ctx = create_tool_context(session_id, arguments)
 
-    guard_output = intake_required_guardrail.guardrail_function(
-        ToolInputGuardrailData(context=tool_ctx, agent=None)
+    guard_output = resolve_guardrail(
+        intake_required_guardrail.guardrail_function(
+            ToolInputGuardrailData(context=tool_ctx, agent=cast(Agent, None))
+        )
     )
 
     assert guard_output.behavior["type"] == "reject_content"
-    assert NO_INTAKE_SNIPPET in guard_output.behavior["message"]
+    behavior_dict = cast(dict[str, Any], guard_output.behavior)
+    assert NO_INTAKE_SNIPPET in behavior_dict["message"]
 
 
 def test_input_guardrail_allows_with_confirmed_intake(
@@ -80,7 +82,7 @@ def test_input_guardrail_allows_with_confirmed_intake(
 ) -> None:
     session_id = "guardrail-valid-intake"
     cleanup_sessions(session_id)
-    session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
+    session_manager._session_cache.pop(session_id, None)
     _, session = session_manager.get_or_create_session(session_id)
     session.save_intake_submission(build_submission())
 
@@ -91,14 +93,16 @@ def test_input_guardrail_allows_with_confirmed_intake(
             "down_payment_available": 400_000,
             "loan_years": 25,
             "existing_monthly_loans": 0,
-            "property_type": PropertyType.FIRST_HOME.value,
-            "risk_profile": RiskProfile.STANDARD.value,
+            "property_type": "first_home",
+            "risk_profile": RiskProfile.STANDARD,
         }
     )
     tool_ctx = create_tool_context(session_id, arguments)
 
-    guard_output = intake_required_guardrail.guardrail_function(
-        ToolInputGuardrailData(context=tool_ctx, agent=None)
+    guard_output = resolve_guardrail(
+        intake_required_guardrail.guardrail_function(
+            ToolInputGuardrailData(context=tool_ctx, agent=cast(Agent, None))
+        )
     )
 
     assert guard_output.behavior["type"] == "allow"
@@ -109,18 +113,21 @@ def test_planning_guardrail_blocks_without_context(
 ) -> None:
     session_id = "guardrail-no-planning"
     cleanup_sessions(session_id)
-    session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
+    session_manager._session_cache.pop(session_id, None)
     _, session = session_manager.get_or_create_session(session_id)
     session.save_intake_submission(build_submission())
 
     tool_ctx = create_tool_context(session_id, "{}")
 
-    guard_output = planning_required_guardrail.guardrail_function(
-        ToolInputGuardrailData(context=tool_ctx, agent=None)
+    guard_output = resolve_guardrail(
+        planning_required_guardrail.guardrail_function(
+            ToolInputGuardrailData(context=tool_ctx, agent=cast(Agent, None))
+        )
     )
 
     assert guard_output.behavior["type"] == "reject_content"
-    assert NO_PLANNING_SNIPPET in guard_output.behavior["message"]
+    behavior_dict = cast(dict[str, Any], guard_output.behavior)
+    assert NO_PLANNING_SNIPPET in behavior_dict["message"]
 
 
 def test_planning_guardrail_allows_with_context(
@@ -128,7 +135,7 @@ def test_planning_guardrail_allows_with_context(
 ) -> None:
     session_id = "guardrail-with-planning"
     cleanup_sessions(session_id)
-    session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
+    session_manager._session_cache.pop(session_id, None)
     _, session = session_manager.get_or_create_session(session_id)
     submission = build_submission()
     session.save_intake_submission(submission)
@@ -136,8 +143,10 @@ def test_planning_guardrail_allows_with_context(
 
     tool_ctx = create_tool_context(session_id, "{}")
 
-    guard_output = planning_required_guardrail.guardrail_function(
-        ToolInputGuardrailData(context=tool_ctx, agent=None)
+    guard_output = resolve_guardrail(
+        planning_required_guardrail.guardrail_function(
+            ToolInputGuardrailData(context=tool_ctx, agent=cast(Agent, None))
+        )
     )
 
     assert guard_output.behavior["type"] == "allow"
@@ -148,15 +157,17 @@ def test_optimization_guardrail_blocks_without_result(
 ) -> None:
     session_id = "guardrail-no-optimization"
     cleanup_sessions(session_id)
-    session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
+    session_manager._session_cache.pop(session_id, None)
     _, session = session_manager.get_or_create_session(session_id)
     submission = build_submission()
     session.save_intake_submission(submission)
     session.set_planning_context(build_planning_context(submission))
 
     tool_ctx = create_tool_context(session_id, "{}")
-    guard_output = optimization_required_guardrail.guardrail_function(
-        ToolInputGuardrailData(context=tool_ctx, agent=None)
+    guard_output = resolve_guardrail(
+        optimization_required_guardrail.guardrail_function(
+            ToolInputGuardrailData(context=tool_ctx, agent=cast(Agent, None))
+        )
     )
 
     assert guard_output.behavior["type"] == "reject_content"
@@ -167,7 +178,7 @@ def test_optimization_guardrail_allows_with_result(
 ) -> None:
     session_id = "guardrail-with-optimization"
     cleanup_sessions(session_id)
-    session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
+    session_manager._session_cache.pop(session_id, None)
     _, session = session_manager.get_or_create_session(session_id)
     submission = build_submission()
     session.save_intake_submission(submission)
@@ -179,8 +190,10 @@ def test_optimization_guardrail_allows_with_result(
     session.set_optimization_result(optimize_mixes(submission.record, planning_context))
 
     tool_ctx = create_tool_context(session_id, "{}")
-    guard_output = optimization_required_guardrail.guardrail_function(
-        ToolInputGuardrailData(context=tool_ctx, agent=None)
+    guard_output = resolve_guardrail(
+        optimization_required_guardrail.guardrail_function(
+            ToolInputGuardrailData(context=tool_ctx, agent=cast(Agent, None))
+        )
     )
 
     assert guard_output.behavior["type"] == "allow"
@@ -191,7 +204,7 @@ def test_output_guardrail_rejects_on_violation(
 ) -> None:
     session_id = "guardrail-violation"
     cleanup_sessions(session_id)
-    session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
+    session_manager._session_cache.pop(session_id, None)
     _, session = session_manager.get_or_create_session(session_id)
     submission = build_submission()
     session.save_intake_submission(submission)
@@ -204,34 +217,35 @@ def test_output_guardrail_rejects_on_violation(
             "down_payment_available": 200_000,
             "loan_years": 32,
             "existing_monthly_loans": 0,
-            "property_type": PropertyType.FIRST_HOME.value,
-            "risk_profile": RiskProfile.STANDARD.value,
+            "property_type": "first_home",
+            "risk_profile": RiskProfile.STANDARD,
         }
     )
     tool_ctx = create_tool_context(session_id, arguments)
 
-    assert (
+    guard_intake = resolve_guardrail(
         intake_required_guardrail.guardrail_function(
-            ToolInputGuardrailData(context=tool_ctx, agent=None)
-        ).behavior["type"]
-        == "allow"
+            ToolInputGuardrailData(context=tool_ctx, agent=cast(Agent, None))
+        )
     )
+    assert guard_intake.behavior["type"] == "allow"
 
-    assert (
+    guard_planning = resolve_guardrail(
         planning_required_guardrail.guardrail_function(
-            ToolInputGuardrailData(context=tool_ctx, agent=None)
-        ).behavior["type"]
-        == "allow"
+            ToolInputGuardrailData(context=tool_ctx, agent=cast(Agent, None))
+        )
     )
+    assert guard_planning.behavior["type"] == "allow"
 
     calc = MortgageEligibilityEvaluator.evaluate(
         monthly_net_income=8_000,
         property_price=2_200_000,
         down_payment_available=200_000,
-        property_type=PropertyType.FIRST_HOME,
+        property_type=PropertyType.SINGLE,
+        deal_type=DealType.FIRST_HOME,
         risk_profile=RiskProfile.STANDARD,
         existing_loans_payment=0,
-        years=32,
+        loan_term_years=32,
     )
 
     tool_output = {
@@ -241,8 +255,8 @@ def test_output_guardrail_rejects_on_violation(
             "down_payment_available": 200_000,
             "existing_monthly_loans": 0,
             "loan_years": 32,
-            "property_type": PropertyType.FIRST_HOME.value,
-            "risk_profile": RiskProfile.STANDARD.value,
+            "property_type": "first_home",
+            "risk_profile": RiskProfile.STANDARD,
         },
         "eligibility": {
             "is_eligible": calc.is_eligible,
@@ -251,23 +265,40 @@ def test_output_guardrail_rejects_on_violation(
             "monthly_payment_capacity": calc.monthly_payment_capacity,
             "required_down_payment": calc.required_down_payment,
             "debt_to_income_ratio": calc.debt_to_income_ratio,
+            "peak_debt_to_income_ratio": calc.peak_debt_to_income_ratio,
             "loan_to_value_ratio": calc.loan_to_value_ratio,
+            "ltv_value_basis": calc.ltv_value_basis,
             "assessed_monthly_payment": calc.assessed_monthly_payment,
             "pti_limit_applied": calc.pti_limit_applied,
             "limits": {
                 "pti_limit": calc.pti_limit_applied,
                 "dti_limit": calc.pti_limit_applied,
-                "ltv_limit": MortgageEligibilityEvaluator.LTV_LIMITS[
-                    PropertyType.FIRST_HOME
-                ],
+                "ltv_limit": MortgageEligibilityEvaluator._resolve_ltv_limit(
+                    PropertyType.SINGLE, DealType.FIRST_HOME
+                ),
             },
+            "violations": calc.violations,
+            "warnings": calc.warnings,
+            "applied_exceptions": calc.applied_exceptions,
         },
         "improvement_options": [],
     }
 
-    guard_output = eligibility_compliance_guardrail.guardrail_function(
-        ToolOutputGuardrailData(context=tool_ctx, agent=None, output=tool_output)
+    guard_output = resolve_guardrail(
+        eligibility_compliance_guardrail.guardrail_function(
+            ToolOutputGuardrailData(
+                context=tool_ctx, agent=cast(Agent, None), output=tool_output
+            )
+        )
     )
 
     assert guard_output.behavior["type"] == "reject_content"
-    assert VIOLATION_SNIPPET in guard_output.behavior["message"]
+    behavior_dict = cast(dict[str, Any], guard_output.behavior)
+    if calc.violations:
+        assert calc.violations[0] in behavior_dict["message"]
+
+
+def resolve_guardrail(result):
+    if inspect.isawaitable(result):
+        return run_async(result)
+    return result

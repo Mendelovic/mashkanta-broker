@@ -39,7 +39,7 @@ def test_submit_intake_record_persists_revision(
 ) -> None:
     session_id = "test-intake-session"
     cleanup_session(session_id)
-    session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
+    session_manager._session_cache.pop(session_id, None)
 
     _, session = session_manager.get_or_create_session(session_id)
     submission = build_submission()

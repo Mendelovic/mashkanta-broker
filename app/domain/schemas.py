@@ -412,7 +412,7 @@ class FeasibilityResult(BaseModel):
     ltv_limit: float
     pti_ratio: float
     pti_limit: float
-    pti_ratio_peak: Optional[float] = None
+    pti_ratio_peak: float
     variable_share_pct: Optional[float] = None
     variable_share_limit_pct: Optional[float] = None
     loan_term_years: Optional[int] = None

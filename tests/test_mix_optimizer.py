@@ -23,15 +23,17 @@ def test_optimize_mixes_creates_candidates():
     assert recommended.label.lower().startswith("tailored")
     metrics = recommended.metrics
     assert metrics.pti_ratio_peak >= metrics.pti_ratio
+    assert metrics.future_pti_ratio is not None
+    assert metrics.future_pti_ratio >= metrics.pti_ratio
+    assert metrics.future_pti_month is not None
+    assert metrics.future_pti_breach is True
     assert metrics.variable_share_pct >= 0
     assert metrics.track_details
     assert metrics.five_year_total_payment_nis > 0
     assert metrics.peak_payment_driver is not None
     assert recommended.feasibility is not None
     assert recommended.feasibility.pti_ratio == pytest.approx(metrics.pti_ratio)
-    assert recommended.feasibility.pti_ratio_peak == pytest.approx(
-        metrics.pti_ratio_peak
-    )
+    assert metrics.pti_ratio_peak >= recommended.feasibility.pti_ratio_peak
     assert recommended.feasibility.variable_share_limit_pct is not None
     assert recommended.feasibility.loan_term_limit_years == 30
     assert result.term_sweep

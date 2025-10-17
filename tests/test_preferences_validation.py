@@ -34,27 +34,25 @@ def _build_preferences(**overrides: Any) -> Preferences:
     return Preferences(**merged)
 
 
-def test_preferences_parses_currency_strings():
-    prefs = _build_preferences(
-        max_payment_nis="6,500",
-        red_line_payment_nis="7.2k",
-    )
-    assert prefs.max_payment_nis == pytest.approx(6500.0)
-    assert prefs.red_line_payment_nis == pytest.approx(7200.0)
+def test_preferences_rejects_currency_strings():
+    with pytest.raises(TypeError):
+        _build_preferences(
+            max_payment_nis="6,500",
+            red_line_payment_nis="7.2k",
+        )
 
 
-def test_preferences_parses_range_string():
-    prefs = _build_preferences(
-        max_payment_nis="5.5k-6.5k",
-        red_line_payment_nis="5.5k-6.5k",
-    )
-    assert prefs.max_payment_nis == pytest.approx(6000.0)
-    assert prefs.red_line_payment_nis == pytest.approx(6500.0)
+def test_preferences_rejects_range_string():
+    with pytest.raises(TypeError):
+        _build_preferences(
+            max_payment_nis="5.5k-6.5k",
+            red_line_payment_nis="5.5k-6.5k",
+        )
 
 
 def test_preferences_rejects_too_small_payment():
     with pytest.raises(ValueError):
-        _build_preferences(max_payment_nis="0.5", red_line_payment_nis="0.6")
+        _build_preferences(max_payment_nis=0.5, red_line_payment_nis=0.6)
 
 
 def test_preferences_allow_missing_payments():

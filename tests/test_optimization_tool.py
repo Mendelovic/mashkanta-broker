@@ -18,13 +18,13 @@ def session_factory() -> Iterator[Callable[[str], None]]:
     created: list[str] = []
 
     def _prepare(session_id: str) -> None:
-        session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
+        session_manager._session_cache.pop(session_id, None)
         created.append(session_id)
 
     yield _prepare
 
     for session_id in created:
-        session_manager._session_cache.pop(session_id, None)  # type: ignore[attr-defined]
+        session_manager._session_cache.pop(session_id, None)
 
 
 def create_context(
