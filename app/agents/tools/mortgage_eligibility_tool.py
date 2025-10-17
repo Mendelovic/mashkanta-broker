@@ -13,12 +13,9 @@ from ..guardrails import (
     optimization_required_guardrail,
 )
 from ...models.context import ChatRunContext
+from ...domain.schemas import DealType, PropertyType
 from ...services import session_manager
-from ...services.mortgage_eligibility import (
-    MortgageEligibilityEvaluator,
-    PropertyType,
-    RiskProfile,
-)
+from ...services.mortgage_eligibility import MortgageEligibilityEvaluator, RiskProfile
 
 
 logger = logging.getLogger(__name__)
@@ -47,7 +44,9 @@ class MortgageEligibilityDetails(TypedDict):
     monthly_payment_capacity: float
     required_down_payment: float
     debt_to_income_ratio: float
+    peak_debt_to_income_ratio: float
     loan_to_value_ratio: float
+    ltv_value_basis: float
     assessed_monthly_payment: float
     pti_limit_applied: float
     limits: MortgageEligibilityLimits
@@ -55,6 +54,9 @@ class MortgageEligibilityDetails(TypedDict):
     highest_expected_payment: NotRequired[float]
     expected_weighted_payment: NotRequired[float]
     mix_label: NotRequired[str]
+    violations: NotRequired[list[str]]
+    warnings: NotRequired[list[str]]
+    applied_exceptions: NotRequired[list[str]]
 
 
 class MortgageImprovementOption(TypedDict):
@@ -74,30 +76,30 @@ class MortgageEligibilityResult(TypedDict):
     improvement_options: list[MortgageImprovementOption]
 
 
-class MixMetricSnapshot(TypedDict, total=False):
-    base: float
-    stress: float
-    highest: float
-    expected: float
-    label: str
+class MixMetricsSnapshot(TypedDict, total=False):
+    base: Optional[float]
+    stress: Optional[float]
+    highest: Optional[float]
+    expected: Optional[float]
+    label: Optional[str]
 
 
-_PROPERTY_TYPE_MAP = {
-    PropertyType.FIRST_HOME.value: PropertyType.FIRST_HOME,
-    PropertyType.UPGRADE.value: PropertyType.UPGRADE,
-    PropertyType.INVESTMENT.value: PropertyType.INVESTMENT,
+_PROPERTY_TYPE_DEAL_MAP = {
+    "first_home": (PropertyType.SINGLE, DealType.FIRST_HOME),
+    "single": (PropertyType.SINGLE, DealType.FIRST_HOME),
+    "upgrade": (PropertyType.REPLACEMENT, DealType.REPLACEMENT),
+    "replacement": (PropertyType.REPLACEMENT, DealType.REPLACEMENT),
+    "investment": (PropertyType.INVESTMENT, DealType.INVESTMENT),
 }
 
 _RISK_PROFILE_MAP = {
-    RiskProfile.CONSERVATIVE.value: RiskProfile.CONSERVATIVE,
-    RiskProfile.STANDARD.value: RiskProfile.STANDARD,
-    RiskProfile.AGGRESSIVE.value: RiskProfile.AGGRESSIVE,
+    RiskProfile.CONSERVATIVE: RiskProfile.CONSERVATIVE,
+    RiskProfile.STANDARD: RiskProfile.STANDARD,
+    RiskProfile.AGGRESSIVE: RiskProfile.AGGRESSIVE,
 }
 
 
-def _resolve_mix_metrics(session_id: str) -> dict[str, Optional[float | str]]:
-    """Extract the recommended mix payment metrics from the active session."""
-
+def _resolve_mix_metrics(session_id: str) -> MixMetricsSnapshot:
     session = session_manager.get_session(session_id)
     if session is None:
         return {}
@@ -129,8 +131,8 @@ def evaluate_mortgage_eligibility(
     down_payment_available: float,
     existing_monthly_loans: float = 0.0,
     loan_years: int = 25,
-    property_type: str = PropertyType.FIRST_HOME.value,
-    risk_profile: str = RiskProfile.STANDARD.value,
+    property_type: str = PropertyType.SINGLE.value,
+    risk_profile: str = RiskProfile.STANDARD,
 ) -> MortgageEligibilityResult | MortgageEligibilityError:
     """Evaluate Israeli mortgage eligibility using the latest mix metrics when available."""
     context = getattr(ctx, "context", None)
@@ -141,6 +143,11 @@ def evaluate_mortgage_eligibility(
     if session is None:
         return {"error": f"session {context.session_id} not found."}
 
+    intake_record = session.get_intake_record()
+    borrower = intake_record.borrower if intake_record else None
+    loan = intake_record.loan if intake_record else None
+    property_details = intake_record.property if intake_record else None
+
     mix_metrics = _resolve_mix_metrics(context.session_id)
     assessed_payment = mix_metrics.get("base")
     stress_payment = mix_metrics.get("stress")
@@ -149,18 +156,45 @@ def evaluate_mortgage_eligibility(
     mix_label = mix_metrics.get("label")
 
     try:
-        prop_type = _PROPERTY_TYPE_MAP.get(property_type, PropertyType.FIRST_HOME)
-        risk = _RISK_PROFILE_MAP.get(risk_profile, RiskProfile.STANDARD)
+        prop_type, deal_type_resolved = _PROPERTY_TYPE_DEAL_MAP.get(
+            property_type.lower() if property_type else "",
+            (PropertyType.SINGLE, DealType.FIRST_HOME),
+        )
+        risk_key = (risk_profile or "").lower()
+        risk = _RISK_PROFILE_MAP.get(risk_key, RiskProfile.STANDARD)
 
         calc = MortgageEligibilityEvaluator.evaluate(
             monthly_net_income=monthly_net_income,
             property_price=property_price,
             down_payment_available=down_payment_available,
             property_type=prop_type,
+            deal_type=deal_type_resolved,
             risk_profile=risk,
             existing_loans_payment=existing_monthly_loans,
-            years=loan_years,
+            loan_term_years=loan_years,
             monthly_payment_override=assessed_payment,
+            peak_payment_override=highest_payment,
+            other_housing_payments=(
+                borrower.other_housing_payments_nis if borrower else 0.0
+            ),
+            borrower_rent_expense=(borrower.rent_expense_nis if borrower else 0.0),
+            is_bridge_loan=loan.is_bridge_loan if loan else False,
+            bridge_term_months=loan.bridge_term_months if loan else None,
+            any_purpose_amount_nis=loan.any_purpose_amount_nis if loan else None,
+            is_reduced_price_dwelling=(
+                property_details.is_reduced_price_dwelling
+                if property_details
+                else False
+            ),
+            appraised_value_nis=(
+                property_details.appraisal_value_nis if property_details else None
+            ),
+            is_refinance=loan.is_refinance if loan else False,
+            previous_pti_ratio=loan.previous_pti_ratio if loan else None,
+            previous_ltv_ratio=loan.previous_ltv_ratio if loan else None,
+            previous_variable_share_ratio=(
+                loan.previous_variable_share_ratio if loan else None
+            ),
         )
 
         inputs: MortgageEligibilityInputs = {
@@ -170,13 +204,15 @@ def evaluate_mortgage_eligibility(
             "existing_monthly_loans": existing_monthly_loans,
             "loan_years": loan_years,
             "property_type": prop_type.value,
-            "risk_profile": risk.value,
+            "risk_profile": risk,
         }
 
         limits: MortgageEligibilityLimits = {
             "pti_limit": calc.pti_limit_applied,
             "dti_limit": calc.pti_limit_applied,
-            "ltv_limit": MortgageEligibilityEvaluator.LTV_LIMITS[prop_type],
+            "ltv_limit": MortgageEligibilityEvaluator._resolve_ltv_limit(
+                prop_type, deal_type_resolved
+            ),
         }
 
         eligibility: MortgageEligibilityDetails = {
@@ -186,10 +222,15 @@ def evaluate_mortgage_eligibility(
             "monthly_payment_capacity": calc.monthly_payment_capacity,
             "required_down_payment": calc.required_down_payment,
             "debt_to_income_ratio": calc.debt_to_income_ratio,
+            "peak_debt_to_income_ratio": calc.peak_debt_to_income_ratio,
             "loan_to_value_ratio": calc.loan_to_value_ratio,
+            "ltv_value_basis": calc.ltv_value_basis,
             "assessed_monthly_payment": calc.assessed_monthly_payment,
             "pti_limit_applied": calc.pti_limit_applied,
             "limits": limits,
+            "violations": list(calc.violations),
+            "warnings": list(calc.warnings),
+            "applied_exceptions": list(calc.applied_exceptions),
         }
 
         if stress_payment is not None:
@@ -204,11 +245,12 @@ def evaluate_mortgage_eligibility(
         improvement_options: list[MortgageImprovementOption] = []
         if not calc.is_eligible:
             adjustments = MortgageEligibilityEvaluator.adjustments_to_qualify(
-                monthly_net_income,
-                property_price,
-                down_payment_available,
-                prop_type,
-                existing_monthly_loans,
+                monthly_net_income=monthly_net_income,
+                property_price=property_price,
+                down_payment_available=down_payment_available,
+                property_type=prop_type,
+                deal_type=deal_type_resolved,
+                existing_loans_payment=existing_monthly_loans,
             )
 
             if "reduce_price" in adjustments:
@@ -262,9 +304,3 @@ evaluate_mortgage_eligibility.tool_input_guardrails = [
 evaluate_mortgage_eligibility.tool_output_guardrails = [
     eligibility_compliance_guardrail
 ]
-
-
-
-
-
-

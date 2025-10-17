@@ -47,6 +47,21 @@ def _metrics_snapshot(candidate: OptimizationCandidate) -> Dict[str, Any]:
         "pti_ratio_display": _format_pct(metrics.pti_ratio * 100),
         "pti_ratio_peak": metrics.pti_ratio_peak,
         "pti_ratio_peak_display": _format_pct(metrics.pti_ratio_peak * 100),
+        "pti_ratio_peak_month": metrics.pti_ratio_peak_month,
+        "future_pti_ratio": metrics.future_pti_ratio,
+        "future_pti_ratio_display": (
+            _format_pct(metrics.future_pti_ratio * 100)
+            if metrics.future_pti_ratio is not None
+            else None
+        ),
+        "future_pti_month": metrics.future_pti_month,
+        "future_pti_target": metrics.future_pti_target,
+        "future_pti_target_display": (
+            _format_pct(metrics.future_pti_target * 100)
+            if metrics.future_pti_target is not None
+            else None
+        ),
+        "future_pti_breach": metrics.future_pti_breach,
         "five_year_total_payment_nis": metrics.five_year_total_payment_nis,
         "five_year_total_payment_display": _format_currency(
             metrics.five_year_total_payment_nis

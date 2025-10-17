@@ -16,19 +16,19 @@ from agents.tool_guardrails import (
 from ..models.context import ChatRunContext
 from ..services import session_manager
 
-_HEBREW_NO_INTAKE_MESSAGE = (
-    "לא ניתן להריץ ביקת זכאות לפני שהסתים ראיון הלקוח ואושר סיכום נתונים. "
-    "לאסוף ואמת את כל פרטי ההכנסה, החיובות והנכס, ואז סכם אותם עם הלקוח ושתמש בכלי של `submit_intake_record`."
+_NO_INTAKE_MESSAGE = (
+    "Cannot run eligibility checks before the intake interview is completed. "
+    "Collect and confirm the full intake, then call `submit_intake_record`."
 )
 
-_HEBREW_NO_PLANNING_MESSAGE = (
-    "לא ניתן לכיל ביקת זכאות לפני חשוב תכנון עדכני. "
-    "השתמש בכלי `compute_planning_context` מיד אחר סיכום לקוח."
+_NO_PLANNING_MESSAGE = (
+    "Cannot run eligibility checks before the planning context is ready. "
+    "Call `compute_planning_context` after confirming the intake."
 )
 
-_HEBREW_NO_OPTIMIZATION_MESSAGE = (
-    "לא ניתן להריץ ביקת זכאות לפני שלבי עובר תרכיב תחזוקת עדכני. "
-    "השתמש בכלי `run_mix_optimization` אחר בדוות ההקשר התכנון."
+_NO_OPTIMIZATION_MESSAGE = (
+    "Cannot run eligibility checks before mix optimization is complete. "
+    "Call `run_mix_optimization` after deriving the planning context."
 )
 
 
@@ -42,7 +42,7 @@ def _ensure_intake_exists(data: ToolInputGuardrailData) -> ToolGuardrailFunction
     session = session_manager.get_session(chat_context.session_id)
     if session is None or session.get_intake_record() is None:
         return ToolGuardrailFunctionOutput.reject_content(
-            message=_HEBREW_NO_INTAKE_MESSAGE,
+            message=_NO_INTAKE_MESSAGE,
             output_info={"reason": "missing_intake_record"},
         )
 
@@ -63,9 +63,9 @@ def _extract_output_dict(obj: Any) -> Optional[Dict[str, Any]]:
 
 
 def _compose_violation_message(violations: List[str]) -> str:
-    header = "בדיקת הזכאות הופסקה כי נמצאו חריגות מול כללי בנק ישראל:"
+    header = "Compliance guardrail triggered for the following reasons:"
     formatted = "\n".join(f"- {item}" for item in violations)
-    footer = "בקש מהלקוח לשנות את מאפיי הלוואה (הון עצמי, תקופה, הכנסה נסופית) ואז אחר כך נסה שוב להריץ את הבדיקה."
+    footer = "Resolve the PTI/LTV/term/exposure issues before retrying the tool."
     return f"{header}\n{formatted}\n{footer}"
 
 
@@ -83,6 +83,14 @@ def _enforce_boi_constraints(
     if not eligibility or not limits:
         return ToolGuardrailFunctionOutput.allow()
 
+    structured_violations = eligibility.get("violations")
+    if isinstance(structured_violations, list) and structured_violations:
+        message = _compose_violation_message(structured_violations)
+        return ToolGuardrailFunctionOutput.reject_content(
+            message=message,
+            output_info={"violations": structured_violations},
+        )
+
     violations: List[str] = []
 
     assessed_payment = eligibility.get("assessed_monthly_payment")
@@ -95,23 +103,26 @@ def _enforce_boi_constraints(
         if dti > applied_pti_limit + 1e-6:
             if isinstance(assessed_payment, (int, float)):
                 violations.append(
-                    "תשלום חודשי של "
-                    f"{assessed_payment:,.0f} ₪ מגביל יחס החזר של {dti:.1%} וחורג את המגבלה ({applied_pti_limit:.0%})."
+                    f"Monthly payment of {assessed_payment:,.0f} ₪ results in PTI {dti:.1%}, which exceeds the limit {applied_pti_limit:.0%}."
                 )
             else:
                 violations.append(
-                    f"יחס החזר ({dti:.1%}) חורג מהמגבלה ({applied_pti_limit:.0%})."
+                    f"PTI {dti:.1%} exceeds the limit {applied_pti_limit:.0%}."
                 )
 
     ltv = eligibility.get("loan_to_value_ratio")
     ltv_limit = limits.get("ltv_limit")
     if isinstance(ltv, (int, float)) and isinstance(ltv_limit, (int, float)):
         if ltv > ltv_limit + 1e-6:
-            violations.append(f"חלק מימון ({ltv:.0%}) חורג מהמגבלה ({ltv_limit:.0%}).")
+            violations.append(
+                "Loan-to-value ratio {ltv:.0%} exceeds the allowed limit {ltv_limit:.0%}."
+            )
 
     loan_years = inputs.get("loan_years")
     if isinstance(loan_years, (int, float)) and loan_years > 30:
-        violations.append("תקופת הלוואה עולה מ-30 שנים, נגדד להוראות בנק ישראל.")
+        violations.append(
+            "Loan term of {loan_years} years exceeds the 30-year maximum."
+        )
 
     if not eligibility.get("is_eligible") and not violations:
         notes = eligibility.get("eligibility_notes")
@@ -146,7 +157,7 @@ def _ensure_planning_context_exists(
     session = session_manager.get_session(chat_context.session_id)
     if session is None or session.get_planning_context() is None:
         return ToolGuardrailFunctionOutput.reject_content(
-            message=_HEBREW_NO_PLANNING_MESSAGE,
+            message=_NO_PLANNING_MESSAGE,
             output_info={"reason": "missing_planning_context"},
         )
 
@@ -171,7 +182,7 @@ def _ensure_optimization_exists(
     session = session_manager.get_session(chat_context.session_id)
     if session is None or session.get_optimization_result() is None:
         return ToolGuardrailFunctionOutput.reject_content(
-            message=_HEBREW_NO_OPTIMIZATION_MESSAGE,
+            message=_NO_OPTIMIZATION_MESSAGE,
             output_info={"reason": "missing_optimization"},
         )
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import date
 from enum import Enum
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
@@ -26,68 +25,6 @@ FutureTimeframe = Annotated[int, Field(ge=0, le=240)]
 PreferenceScore = Annotated[float, Field(ge=0.0, le=10.0)]
 PreferenceWeight = Annotated[float, Field(ge=0.0, le=1.0)]
 VolatilityFactor = Annotated[float, Field(ge=0.0, le=1.0)]
-
-
-def _parse_currency_amount(value: Any) -> Optional[float]:
-    """Parse various user-entered currency representations into a float."""
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        cleaned = value.strip()
-        if not cleaned:
-            return None
-        cleaned = cleaned.replace("₪", "").replace(",", "").replace(" ", "")
-        multiplier = 1.0
-        if cleaned and cleaned[-1] in {"k", "K"}:
-            multiplier = 1_000.0
-            cleaned = cleaned[:-1]
-        elif cleaned and cleaned[-1] in {"m", "M"}:
-            multiplier = 1_000_000.0
-            cleaned = cleaned[:-1]
-        try:
-            return float(cleaned) * multiplier
-        except ValueError as exc:  # pragma: no cover - defensive
-            raise ValueError(f"Invalid currency amount: {value}") from exc
-    raise TypeError(f"Unsupported currency type: {type(value)!r}")  # pragma: no cover
-
-
-def _parse_range_bounds(raw: str) -> Optional[tuple[float, float]]:
-    separators = ("-", "–", "—", "עד", "to", "עד")
-    if not any(sep in raw for sep in separators):
-        return None
-
-    import re
-
-    parts = [
-        part.strip()
-        for part in re.split(r"\s*(?:-|–|—|עד|עד|to)\s*", raw, maxsplit=2)
-        if part.strip()
-    ]
-    if len(parts) >= 2:
-        try:
-            lower = _parse_currency_amount(parts[0])
-            upper = _parse_currency_amount(parts[1])
-        except (TypeError, ValueError):
-            return None
-        if lower is None or upper is None:
-            return None
-        lower, upper = sorted((lower, upper))
-        return lower, upper
-    if len(parts) == 1 and "עד" in raw:
-        upper = _parse_currency_amount(parts[0])
-        if upper is None:
-            return None
-        return upper * 0.9, upper
-    return None
-
-
-class ResidencyStatus(str, Enum):
-    """Residency status relevant for regulatory exceptions."""
-
-    RESIDENT = "resident"
-    NON_RESIDENT = "non_resident"
 
 
 class OccupancyIntent(str, Enum):
@@ -142,15 +79,24 @@ class BorrowerProfile(BaseModel):
 
     primary_applicant_name: Optional[str] = None
     co_applicant_names: List[str] = Field(default_factory=list)
-    residency: ResidencyStatus = ResidencyStatus.RESIDENT
     occupancy: OccupancyIntent = OccupancyIntent.OWN
     net_income_nis: PositiveFloat = Field(
         ..., description="Disposable monthly income in NIS"
+    )
+    rent_expense_nis: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Monthly rent obligation deducted from income for non-owner-occupiers.",
     )
     fixed_expenses_nis: float = Field(
         default=0.0,
         ge=0.0,
         description="Monthly fixed obligations counted in PTI (loans >18m, alimony, rent if not occupying).",
+    )
+    other_housing_payments_nis: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Monthly payments on housing loans held at other lenders (Directive 329).",
     )
     additional_income_nis: float = Field(default=0.0, ge=0.0)
     employment_status: str = Field(
@@ -172,18 +118,6 @@ class BorrowerProfile(BaseModel):
         default=None,
         description="0=stable, 1=highly volatile. Used to buffer payment stress.",
     )
-    notes: Optional[str] = None
-    equity_provenance: Optional[str] = Field(
-        default=None,
-        description="Source of equity (savings, gifts, sale, etc.) and transfer status.",
-    )
-    gift_letter_required: Optional[bool] = Field(
-        default=None, description="True if a gift letter will be needed."
-    )
-    employer_stability_notes: Optional[str] = Field(
-        default=None,
-        description="Employer type, sector stability, probation status, and tenure context.",
-    )
 
     @model_validator(mode="after")
     def _validate_employment_fields(self) -> "BorrowerProfile":
@@ -199,18 +133,15 @@ class PropertyDetails(BaseModel):
 
     type: PropertyType
     value_nis: PositiveFloat
-    address_city: Optional[str] = None
-    address_region: Optional[str] = None
+    is_reduced_price_dwelling: bool = Field(
+        default=False,
+        description="True when the transaction is part of a reduced-price/buyer-price program (Directive 329 §4a).",
+    )
     is_new_build: bool = False
     target_close_months: Optional[FutureTimeframe] = Field(
         default=None, description="Months until expected closing/draw."
     )
-    builder_name: Optional[str] = None
     appraisal_value_nis: Optional[PositiveFloat] = None
-    title_notes: Optional[str] = Field(
-        default=None,
-        description="Notes on rights/registration (Tabu, Minhal, Hevra Meshakenet, TAMA status, easements).",
-    )
 
 
 class LoanAsk(BaseModel):
@@ -218,9 +149,40 @@ class LoanAsk(BaseModel):
 
     amount_nis: PositiveFloat
     term_years: LoanTerm
-    currency: Literal["NIS", "FX"] = "NIS"
-    target_draw_date: Optional[date] = None
-    desired_start_month: Optional[StartMonth] = None
+    is_refinance: bool = Field(
+        default=False,
+        description="True when this request refinances an existing mortgage (Directive 329 §9).",
+    )
+    is_bridge_loan: bool = Field(
+        default=False,
+        description="True when this is a bridge loan expected to be closed within three years (Directive 329 §12).",
+    )
+    bridge_term_months: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=360,
+        description="Bridge loan term in months when applicable.",
+    )
+    any_purpose_amount_nis: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        description="Portion of the loan allocated to 'any-purpose' usage (Directive 329 §12).",
+    )
+    previous_pti_ratio: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        description="PTI ratio of the existing mortgage when refinancing (Directive 329 §9).",
+    )
+    previous_ltv_ratio: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        description="LTV ratio of the existing mortgage when refinancing.",
+    )
+    previous_variable_share_ratio: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        description="Variable-rate share of the existing mortgage when refinancing.",
+    )
 
 
 class PreferenceSignal(BaseModel):
@@ -245,29 +207,24 @@ class Preferences(BaseModel):
     expected_prepay_month: Optional[PrepayMonth] = None
     prepayment_confirmed: bool = False
     rate_view: RateView = RateView.FLAT
-    additional_signals: List[PreferenceSignal] = Field(default_factory=list)
 
     _MIN_PAYMENT_AMOUNT_NIS = 100.0
 
     @field_validator("max_payment_nis", "red_line_payment_nis", mode="before")
     @classmethod
-    def _coerce_payment_amount(
+    def _ensure_numeric_payment(
         cls, value: Any, info: ValidationInfo
     ) -> Optional[float]:
         if value is None:
             return None
+        if isinstance(value, (int, float)):
+            return float(value)
         if isinstance(value, str) and not value.strip():
             return None
-        if isinstance(value, str):
-            bounds = _parse_range_bounds(value)
-            if bounds is not None:
-                lower, upper = bounds
-                if info.field_name == "max_payment_nis":
-                    return (lower + upper) / 2.0
-                return upper
-
-        parsed = _parse_currency_amount(value)
-        return parsed
+        raise TypeError(
+            f"{info.field_name} must be provided as a numeric value. "
+            "Ensure the agent converts ranges or textual amounts into numbers."
+        )
 
     @model_validator(mode="after")
     def _validate_payment_targets(self) -> "Preferences":
@@ -310,7 +267,6 @@ class FuturePlan(BaseModel):
     timeframe_months: Optional[FutureTimeframe] = None
     expected_income_delta_nis: Optional[float] = None
     confidence: Optional[PreferenceWeight] = None
-    notes: Optional[str] = None
 
 
 class QuoteTrack(BaseModel):
@@ -425,7 +381,6 @@ class PrepaymentEvent(BaseModel):
 
     month: int
     pct_of_balance: float
-    notes: Optional[str] = None
 
 
 class PlanningContext(BaseModel):
@@ -506,6 +461,7 @@ class MixMetrics(BaseModel):
     monthly_payment_nis: float
     pti_ratio: float
     pti_ratio_peak: float
+    pti_ratio_peak_month: Optional[int] = None
     total_interest_paid: float
     max_payment_under_stress: float
     average_rate_pct: float
@@ -525,6 +481,10 @@ class MixMetrics(BaseModel):
     prepayment_fee_exposure: str
     track_details: List["TrackDetail"]
     payment_sensitivity: List["PaymentSensitivity"]
+    future_pti_ratio: Optional[float] = None
+    future_pti_month: Optional[int] = None
+    future_pti_target: Optional[float] = None
+    future_pti_breach: Optional[bool] = None
 
 
 class TermSweepEntry(BaseModel):

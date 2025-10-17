@@ -18,6 +18,7 @@ from app.domain.schemas import (
     TrackDetail,
     PaymentSensitivity,
 )
+from app.configuration import boi_limits
 from app.services.deal_feasibility import run_feasibility_checks
 
 BASE_ANCHOR_RATES: Dict[RateAnchor, float] = {
@@ -36,7 +37,6 @@ DEFAULT_TRACK_RATES: Dict[str, float] = {
 }
 
 _MENU_TRACK_RATES = load_average_menu_rates()
-MAX_VARIABLE_SHARE = 2 / 3
 
 
 def _estimate_prepayment_exposure(shares: TrackShares) -> str:
@@ -284,6 +284,21 @@ def _soft_cap_notes(
             f"CPI exposure {cpi_share * 100:.1f}% exceeds comfort cap {caps.cpi_share_max * 100:.0f}%."
         )
 
+    if metrics.future_pti_breach:
+        month_desc = (
+            f"month {metrics.future_pti_month}"
+            if metrics.future_pti_month is not None
+            else "a future month"
+        )
+        if metrics.future_pti_target is not None:
+            notes.append(
+                f"Projected PTI in {month_desc} exceeds comfort target ({metrics.future_pti_target * 100:.0f}%)."
+            )
+        elif metrics.future_pti_ratio is not None:
+            notes.append(
+                f"Projected PTI in {month_desc} rises to {metrics.future_pti_ratio * 100:.1f}%."
+            )
+
     payment_ceiling = caps.payment_ceiling_nis
     if (
         payment_ceiling is not None
@@ -323,6 +338,19 @@ def _compute_metrics(
     obligations = max(existing_obligations, 0.0)
     income = max(net_income, 1.0)
     base_pti = (monthly_payment + obligations) / income
+
+    assumptions = getattr(planning, "metadata", {}).get("assumptions", {}) or {}
+    baseline_income_total = assumptions.get("baseline_income", net_income)
+    baseline_expense_total = assumptions.get("baseline_expense", existing_obligations)
+
+    income_timeline = getattr(planning, "income_timeline", []) or []
+    expense_timeline = getattr(planning, "expense_timeline", []) or []
+    pti_targets = getattr(planning, "pti_targets", []) or []
+
+    future_pti_ratio = None
+    future_pti_month = None
+    future_pti_target = None
+    future_pti_breach = False
 
     scenario_weights = {}
     weights_model = getattr(planning, "scenario_weights", None)
@@ -393,6 +421,32 @@ def _compute_metrics(
 
     _update_peak(stress_payment, "stress_prime", 1)
 
+    horizon = min(len(income_timeline), len(expense_timeline))
+    if horizon:
+        baseline_income_total = (
+            baseline_income_total if baseline_income_total is not None else net_income
+        )
+        baseline_expense_total = (
+            baseline_expense_total
+            if baseline_expense_total is not None
+            else existing_obligations
+        )
+        for month in range(horizon):
+            income_adjustment = income_timeline[month] - baseline_income_total
+            expense_adjustment = expense_timeline[month] - baseline_expense_total
+            future_net_income = max(net_income + income_adjustment, 1.0)
+            future_obligations = max(obligations + expense_adjustment, 0.0)
+            future_pti = (monthly_payment + future_obligations) / future_net_income
+            target = None
+            if month < len(pti_targets):
+                target = pti_targets[month]
+            if future_pti_ratio is None or future_pti > future_pti_ratio + 1e-6:
+                future_pti_ratio = future_pti
+                future_pti_month = month + 1
+                future_pti_target = target
+            if target is not None and future_pti > target + 1e-6:
+                future_pti_breach = True
+
     if peak_payment_driver.startswith("scenario"):
         highest_expected_payment_note = "Peak payment reflects the Bank of Israel disclosure path (Prime +3% / CPI +2%)."
     elif peak_payment_driver.startswith("sensitivity_prime_"):
@@ -410,6 +464,10 @@ def _compute_metrics(
         )
 
     peak_pti = (highest_expected_payment + obligations) / income
+    pti_ratio_peak_month = peak_payment_month
+    if future_pti_ratio is not None and future_pti_ratio > peak_pti + 1e-6:
+        peak_pti = future_pti_ratio
+        pti_ratio_peak_month = future_pti_month
     variable_share_pct = (shares.variable_prime + shares.variable_cpi) * 100
     cpi_share_pct = (shares.fixed_cpi + shares.variable_cpi) * 100
     ltv_ratio = (loan_amount / property_value) if property_value > 0 else 0.0
@@ -432,6 +490,7 @@ def _compute_metrics(
         monthly_payment_nis=monthly_payment,
         pti_ratio=base_pti,
         pti_ratio_peak=peak_pti,
+        pti_ratio_peak_month=pti_ratio_peak_month,
         total_interest_paid=total_interest,
         max_payment_under_stress=stress_payment,
         average_rate_pct=avg_rate * 100,
@@ -448,6 +507,10 @@ def _compute_metrics(
         prepayment_fee_exposure=prepayment_exposure,
         track_details=track_details,
         payment_sensitivity=sensitivity_entries,
+        future_pti_ratio=future_pti_ratio,
+        future_pti_month=future_pti_month,
+        future_pti_target=future_pti_target,
+        future_pti_breach=future_pti_breach,
     )
 
 
@@ -518,6 +581,11 @@ def _assemble_candidate(
     net_income = interview.borrower.net_income_nis
     fixed_expenses = interview.borrower.fixed_expenses_nis
     property_value = interview.property.value_nis
+    other_housing = interview.borrower.other_housing_payments_nis
+    rent_expense = interview.borrower.rent_expense_nis
+    bridge_term_months = interview.loan.bridge_term_months
+    any_purpose_amount = interview.loan.any_purpose_amount_nis
+    property_appraisal = interview.property.appraisal_value_nis
 
     metrics = _compute_metrics(
         loan_amount,
@@ -542,6 +610,17 @@ def _assemble_candidate(
         peak_payment=metrics.highest_expected_payment_nis,
         borrower_age_years=interview.borrower.age_years,
         variable_share=shares.variable_prime + shares.variable_cpi,
+        other_housing_payments=other_housing,
+        borrower_rent_expense=rent_expense,
+        is_bridge_loan=interview.loan.is_bridge_loan,
+        bridge_term_months=bridge_term_months,
+        any_purpose_amount_nis=any_purpose_amount,
+        is_reduced_price_dwelling=interview.property.is_reduced_price_dwelling,
+        appraised_value_nis=property_appraisal,
+        is_refinance=interview.loan.is_refinance,
+        previous_pti_ratio=interview.loan.previous_pti_ratio,
+        previous_ltv_ratio=interview.loan.previous_ltv_ratio,
+        previous_variable_share_ratio=interview.loan.previous_variable_share_ratio,
     )
     notes = _soft_cap_notes(planning, shares, metrics)
     if feasibility.issues:
@@ -568,7 +647,9 @@ def _compose_shares(
     variable_cpi = max(variable_cpi, 0.0)
     fixed_cpi = max(fixed_cpi, 0.0)
 
-    variable_cap = min(planning.soft_caps.variable_share_max, MAX_VARIABLE_SHARE)
+    variable_cap = min(
+        planning.soft_caps.variable_share_max, boi_limits.VARIABLE_SHARE_LIMIT
+    )
     variable_total = variable_prime + variable_cpi
     if variable_total > variable_cap + 1e-6:
         scale = variable_cap / variable_total if variable_total > 0 else 0.0
@@ -618,7 +699,9 @@ def _compose_shares(
 
 
 def _generate_balanced_shares(planning: PlanningContext) -> TrackShares:
-    variable_cap = min(planning.soft_caps.variable_share_max, MAX_VARIABLE_SHARE)
+    variable_cap = min(
+        planning.soft_caps.variable_share_max, boi_limits.VARIABLE_SHARE_LIMIT
+    )
     cpi_cap = planning.soft_caps.cpi_share_max
     effective_cpi_cap = cpi_cap if cpi_cap is not None else 1.0
 
