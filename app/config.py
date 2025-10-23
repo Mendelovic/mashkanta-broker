@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     """Application settings with environment variable loading."""
 
     # API Configuration
-    app_name: str = "Mortgage Analysis API"
+    app_name: str = "mortgage-broker"
     app_version: str = "1.0.0"
     debug: bool = False
 
@@ -25,6 +25,12 @@ class Settings(BaseSettings):
 
     # Document Processing Configuration
     max_files_per_request: int = 10
+
+    # Supabase Auth Configuration
+    supabase_project_url: Optional[str] = None
+    supabase_jwt_secret: Optional[str] = None
+    supabase_jwt_audience: str = "authenticated"
+    supabase_jwt_issuer: Optional[str] = None
 
     # Session Management Configuration
     default_session_prefix: str = "mortgage_session_"

@@ -10,3 +10,4 @@ aiohttp
 numpy
 pandas
 pyyaml
+python-jose[cryptography]

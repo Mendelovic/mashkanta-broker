@@ -1,6 +1,7 @@
 import pytest
 
-from app.routers.chat import CandidateSummary, build_candidate_summary
+from app.models.chat_response import CandidateSummary
+from app.services.chat_payload import build_candidate_summary
 from app.services.mix_optimizer import optimize_mixes
 from app.services.optimization_formatter import (
     format_candidates,

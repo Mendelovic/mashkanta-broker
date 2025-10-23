@@ -44,7 +44,7 @@ class _SessionEntry:
 class InMemorySession(SessionABC):
     """In-memory session holding conversation history and timeline state."""
 
-    def __init__(self, session_id: str) -> None:
+    def __init__(self, session_id: str, owner_user_id: str | None = None) -> None:
         self.session_id = session_id
         self._items: list[TResponseInputItem] = []
         self._lock = threading.RLock()
@@ -53,6 +53,17 @@ class InMemorySession(SessionABC):
         self._planning_context: PlanningContext | None = None
         self._optimization_result: OptimizationResult | None = None
         self._timeline_watchers: set[asyncio.Queue[TimelineUpdatePayload]] = set()
+        self._owner_user_id = owner_user_id
+
+    @property
+    def owner_user_id(self) -> str | None:
+        with self._lock:
+            return self._owner_user_id
+
+    def ensure_owner(self, user_id: str) -> None:
+        with self._lock:
+            if self._owner_user_id is None:
+                self._owner_user_id = user_id
 
     async def get_items(self, limit: Optional[int] = None) -> list[TResponseInputItem]:
         with self._lock:
@@ -218,8 +229,10 @@ def _generate_session_id() -> str:
     return f"{settings.default_session_prefix}{timestamp}_{unique_part}"
 
 
-def get_or_create_session(session_id: Optional[str]) -> Tuple[str, InMemorySession]:
-    """Return an existing in-memory session or create a new one."""
+def get_or_create_session(
+    session_id: Optional[str], user_id: str | None = None
+) -> Tuple[str, InMemorySession]:
+    """Return an existing in-memory session for a user or create a new one."""
 
     with _cache_lock:
         now = _utcnow()
@@ -228,29 +241,37 @@ def get_or_create_session(session_id: Optional[str]) -> Tuple[str, InMemorySessi
         if session_id:
             entry = _session_cache.get(session_id)
             if entry is not None:
+                if user_id:
+                    owner = entry.session.owner_user_id
+                    if owner is not None and owner != user_id:
+                        raise PermissionError("Session does not belong to this user")
+                    entry.session.ensure_owner(user_id)
                 entry.last_access = now
                 return session_id, entry.session
 
         new_id = session_id or _generate_session_id()
-        entry = _session_cache.get(new_id)
-        if entry is not None:
-            entry.last_access = now
-            return new_id, entry.session
+        while new_id in _session_cache:
+            new_id = _generate_session_id()
 
-        session = InMemorySession(new_id)
+        session = InMemorySession(new_id, owner_user_id=user_id)
         _session_cache[new_id] = _SessionEntry(session=session, last_access=now)
         logger.debug("Created new session: %s", new_id)
         _purge_expired_sessions(now)
         return new_id, session
 
 
-def get_session(session_id: str) -> InMemorySession | None:
+def get_session(session_id: str, user_id: str | None = None) -> InMemorySession | None:
     """Return a session when it already exists."""
 
     with _cache_lock:
         entry = _session_cache.get(session_id)
         if entry is None:
             return None
+        if user_id:
+            owner = entry.session.owner_user_id
+            if owner is not None and owner != user_id:
+                return None
+            entry.session.ensure_owner(user_id)
         entry.last_access = _utcnow()
         return entry.session
 
