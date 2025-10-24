@@ -115,13 +115,13 @@ def _enforce_boi_constraints(
     if isinstance(ltv, (int, float)) and isinstance(ltv_limit, (int, float)):
         if ltv > ltv_limit + 1e-6:
             violations.append(
-                "Loan-to-value ratio {ltv:.0%} exceeds the allowed limit {ltv_limit:.0%}."
+                f"Loan-to-value ratio {ltv:.0%} exceeds the allowed limit {ltv_limit:.0%}."
             )
 
     loan_years = inputs.get("loan_years")
     if isinstance(loan_years, (int, float)) and loan_years > 30:
         violations.append(
-            "Loan term of {loan_years} years exceeds the 30-year maximum."
+            f"Loan term of {loan_years} years exceeds the 30-year maximum."
         )
 
     if not eligibility.get("is_eligible") and not violations:

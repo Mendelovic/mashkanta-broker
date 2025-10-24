@@ -36,7 +36,7 @@ async def run_mix_optimization(ctx: ToolContext[ChatRunContext]) -> str:
         return "ERROR: cannot optimize mixes before planning context is computed."
 
     result = optimize_mixes(intake_record, planning_context)
-    session.set_optimization_result(result)
+    await session.set_optimization_result_async(result)
 
     logger.info(
         "mix optimization completed",

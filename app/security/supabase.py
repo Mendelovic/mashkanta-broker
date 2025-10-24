@@ -64,7 +64,7 @@ def _validate_config() -> tuple[str, str, str, str]:
 _JWKS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
-def _get_jwks(jwks_url: str) -> dict[str, Any]:
+async def _get_jwks(jwks_url: str) -> dict[str, Any]:
     ttl = max(settings.supabase_jwks_cache_ttl_seconds, 60)
     cached = _JWKS_CACHE.get(jwks_url)
     now = time()
@@ -72,8 +72,8 @@ def _get_jwks(jwks_url: str) -> dict[str, Any]:
         return cached[1]
 
     try:
-        with httpx.Client(timeout=5.0) as client:
-            response = client.get(jwks_url)
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(jwks_url)
             response.raise_for_status()
             jwks = response.json()
     except httpx.HTTPError as exc:  # pragma: no cover - network failure
@@ -86,8 +86,8 @@ def _get_jwks(jwks_url: str) -> dict[str, Any]:
     return jwks
 
 
-def _build_key(token: str, jwks_url: str) -> dict[str, Any]:
-    jwks = _get_jwks(jwks_url)
+async def _build_key(token: str, jwks_url: str) -> dict[str, Any]:
+    jwks = await _get_jwks(jwks_url)
     header = jwt.get_unverified_header(token)
     kid = header.get("kid")
     if not kid:
@@ -99,9 +99,9 @@ def _build_key(token: str, jwks_url: str) -> dict[str, Any]:
     raise JWTError("Supabase signing key not found for token")
 
 
-def _decode_token(token: str) -> Dict[str, Any]:
+async def _decode_token(token: str) -> Dict[str, Any]:
     jwks_url, audience, issuer, _ = _validate_config()
-    key = _build_key(token, jwks_url)
+    key = await _build_key(token, jwks_url)
     return jwt.decode(
         token,
         key,
@@ -110,10 +110,10 @@ def _decode_token(token: str) -> Dict[str, Any]:
     )
 
 
-def verify_supabase_token(token: str) -> AuthenticatedUser:
+async def verify_supabase_token(token: str) -> AuthenticatedUser:
     """Verify a Supabase access token and return the authenticated user."""
     try:
-        payload = _decode_token(token)
+        payload = await _decode_token(token)
     except JWTError as exc:  # pragma: no cover - exercised via dependency
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -148,7 +148,7 @@ async def get_current_user(
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return verify_supabase_token(credentials.credentials)
+    return await verify_supabase_token(credentials.credentials)
 
 
 __all__ = ["AuthenticatedUser", "get_current_user", "verify_supabase_token"]

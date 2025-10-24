@@ -1,5 +1,27 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import os
+from functools import lru_cache
+from pathlib import Path
 from typing import Optional
+
+from dotenv import load_dotenv
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+if Path(".env.dev").exists():
+    load_dotenv(".env.dev", override=False)
+
+load_dotenv(".env", override=False)
+
+_ENVIRONMENT = os.getenv("ENVIRONMENT")
+
+if not _ENVIRONMENT:
+    raise RuntimeError(
+        "ENVIRONMENT must be set (via environment variables or .env files) before starting the app."
+    )
+
+ENVIRONMENT = _ENVIRONMENT.lower()
+ENV_FILE = ".env.dev" if ENVIRONMENT == "dev" else ".env"
 
 
 class Settings(BaseSettings):
@@ -33,6 +55,14 @@ class Settings(BaseSettings):
     supabase_jwks_url: Optional[str] = None
     supabase_jwks_cache_ttl_seconds: int = 300
 
+    # Database Configuration (Supabase direct connection)
+    db_host: Optional[str] = Field(default=None, alias="host")
+    db_port: int = Field(default=5432, alias="port")
+    db_name: Optional[str] = Field(default=None, alias="dbname")
+    db_user: Optional[str] = Field(default=None, alias="user")
+    db_password: Optional[str] = Field(default=None, alias="password")
+    environment: str = ENVIRONMENT
+
     # Session Management Configuration
     default_session_prefix: str = "mortgage_session_"
     session_max_entries: int = 500
@@ -44,11 +74,15 @@ class Settings(BaseSettings):
     agent_max_turns: int = 30
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=ENV_FILE,
         case_sensitive=False,
         extra="ignore",
     )
 
 
-# Global settings instance
-settings = Settings()
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()
+
+
+settings = get_settings()

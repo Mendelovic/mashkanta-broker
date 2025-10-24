@@ -38,7 +38,7 @@ async def compute_planning_context(ctx: ToolContext[ChatRunContext]) -> str:
         confirmation_notes=revision.confirmation_notes,
     )
     planning_context = build_planning_context(submission)
-    session.set_planning_context(planning_context)
+    await session.set_planning_context_async(planning_context)
 
     logger.info(
         "planning context computed",

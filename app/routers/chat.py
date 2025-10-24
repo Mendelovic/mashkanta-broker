@@ -34,7 +34,7 @@ router = APIRouter(
 
 # Main endpoint
 @router.post("/chat", response_model=ChatResponse)
-async def unified_chat_endpoint(
+async def chat(
     request: Request,
     message: Annotated[str, Form(max_length=settings.max_message_length)],
     thread_id: Annotated[Optional[str], Form()] = None,
@@ -115,6 +115,6 @@ async def unified_chat_endpoint(
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Chat endpoint failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to process request: {e}")
+    except Exception:
+        logger.exception("Chat endpoint failed")
+        raise HTTPException(status_code=500, detail="Failed to process request.")

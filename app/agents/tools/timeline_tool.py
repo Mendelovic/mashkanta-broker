@@ -31,7 +31,7 @@ class TimelineDetailInput(TypedDict, total=False):
 
 
 @function_tool
-def record_timeline_event(
+async def record_timeline_event(
     ctx: ToolContext[ChatRunContext],
     *,
     title: str,
@@ -96,7 +96,7 @@ def record_timeline_event(
     def _apply_timeline(state: TimelineState) -> None:
         state.upsert_event(new_event)
 
-    state = session.apply_timeline_update(_apply_timeline)
+    state = await session.apply_timeline_update(_apply_timeline)
 
     logger.info(
         "timeline event recorded",
