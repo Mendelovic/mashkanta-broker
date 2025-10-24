@@ -16,6 +16,8 @@ from app.agents.guardrails import (
 from app.agents.tools.mortgage_eligibility_tool import evaluate_mortgage_eligibility
 from app.models.context import ChatRunContext
 from app.services import session_manager
+from app.db.session import SessionLocal
+from app.services.session_repository import SessionRepository
 from app.domain.schemas import DealType, PropertyType
 from app.services.mortgage_eligibility import MortgageEligibilityEvaluator, RiskProfile
 from app.services.planning_mapper import build_planning_context
@@ -42,11 +44,20 @@ def cleanup_sessions() -> Iterator[Callable[[str], None]]:
 
     def _register(session_id: str) -> None:
         created.append(session_id)
+        session_manager._session_cache.pop(session_id, None)
+        with SessionLocal() as db:
+            repo = SessionRepository(db)
+            repo.delete_session(session_id)
+            db.commit()
 
     yield _register
 
     for session_id in created:
         session_manager._session_cache.pop(session_id, None)
+        with SessionLocal() as db:
+            repo = SessionRepository(db)
+            repo.delete_session(session_id)
+            db.commit()
 
 
 def test_input_guardrail_blocks_when_no_intake(
@@ -55,7 +66,7 @@ def test_input_guardrail_blocks_when_no_intake(
     session_id = "guardrail-no-intake"
     cleanup_sessions(session_id)
     session_manager._session_cache.pop(session_id, None)
-    session_manager.get_or_create_session(session_id)
+    session_manager.get_or_create_session(session_id, user_id=TEST_USER_ID)
 
     arguments = json.dumps(
         {
@@ -83,7 +94,7 @@ def test_input_guardrail_allows_with_confirmed_intake(
     session_id = "guardrail-valid-intake"
     cleanup_sessions(session_id)
     session_manager._session_cache.pop(session_id, None)
-    _, session = session_manager.get_or_create_session(session_id)
+    _, session = session_manager.get_or_create_session(session_id, user_id=TEST_USER_ID)
     session.save_intake_submission(build_submission())
 
     arguments = json.dumps(
@@ -114,7 +125,7 @@ def test_planning_guardrail_blocks_without_context(
     session_id = "guardrail-no-planning"
     cleanup_sessions(session_id)
     session_manager._session_cache.pop(session_id, None)
-    _, session = session_manager.get_or_create_session(session_id)
+    _, session = session_manager.get_or_create_session(session_id, user_id=TEST_USER_ID)
     session.save_intake_submission(build_submission())
 
     tool_ctx = create_tool_context(session_id, "{}")
@@ -136,7 +147,7 @@ def test_planning_guardrail_allows_with_context(
     session_id = "guardrail-with-planning"
     cleanup_sessions(session_id)
     session_manager._session_cache.pop(session_id, None)
-    _, session = session_manager.get_or_create_session(session_id)
+    _, session = session_manager.get_or_create_session(session_id, user_id=TEST_USER_ID)
     submission = build_submission()
     session.save_intake_submission(submission)
     session.set_planning_context(build_planning_context(submission))
@@ -158,7 +169,7 @@ def test_optimization_guardrail_blocks_without_result(
     session_id = "guardrail-no-optimization"
     cleanup_sessions(session_id)
     session_manager._session_cache.pop(session_id, None)
-    _, session = session_manager.get_or_create_session(session_id)
+    _, session = session_manager.get_or_create_session(session_id, user_id=TEST_USER_ID)
     submission = build_submission()
     session.save_intake_submission(submission)
     session.set_planning_context(build_planning_context(submission))
@@ -179,7 +190,7 @@ def test_optimization_guardrail_allows_with_result(
     session_id = "guardrail-with-optimization"
     cleanup_sessions(session_id)
     session_manager._session_cache.pop(session_id, None)
-    _, session = session_manager.get_or_create_session(session_id)
+    _, session = session_manager.get_or_create_session(session_id, user_id=TEST_USER_ID)
     submission = build_submission()
     session.save_intake_submission(submission)
     planning_context = build_planning_context(submission)
@@ -205,7 +216,7 @@ def test_output_guardrail_rejects_on_violation(
     session_id = "guardrail-violation"
     cleanup_sessions(session_id)
     session_manager._session_cache.pop(session_id, None)
-    _, session = session_manager.get_or_create_session(session_id)
+    _, session = session_manager.get_or_create_session(session_id, user_id=TEST_USER_ID)
     submission = build_submission()
     session.save_intake_submission(submission)
     session.set_planning_context(build_planning_context(submission))
@@ -302,3 +313,6 @@ def resolve_guardrail(result):
     if inspect.isawaitable(result):
         return run_async(result)
     return result
+
+
+TEST_USER_ID = "test-user-guardrails"

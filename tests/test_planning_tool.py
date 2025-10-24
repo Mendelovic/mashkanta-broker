@@ -8,6 +8,8 @@ from app.agents.tools.intake_tool import submit_intake_record
 from app.agents.tools.planning_tool import compute_planning_context
 from app.models.context import ChatRunContext
 from app.services import session_manager
+from app.db.session import SessionLocal
+from app.services.session_repository import SessionRepository
 from tests.factories import build_submission
 from tests.async_utils import run_async
 
@@ -18,12 +20,20 @@ def session_factory() -> Iterator[Callable[[str], None]]:
 
     def _prepare(session_id: str) -> None:
         session_manager._session_cache.pop(session_id, None)
+        with SessionLocal() as db:
+            repo = SessionRepository(db)
+            repo.delete_session(session_id)
+            db.commit()
         created.append(session_id)
 
     yield _prepare
 
     for session_id in created:
         session_manager._session_cache.pop(session_id, None)
+        with SessionLocal() as db:
+            repo = SessionRepository(db)
+            repo.delete_session(session_id)
+            db.commit()
 
 
 def create_intake_context(session_id: str, payload: str) -> ToolContext[ChatRunContext]:
@@ -48,8 +58,9 @@ def test_compute_planning_context_requires_intake(
     session_factory: Callable[[str], None],
 ) -> None:
     session_id = "planning-no-intake"
+    user_id = "test-user-planning-1"
     session_factory(session_id)
-    session_manager.get_or_create_session(session_id)
+    session_manager.get_or_create_session(session_id, user_id=user_id)
 
     planning_ctx = create_planning_context(session_id)
     result = run_async(compute_planning_context.on_invoke_tool(planning_ctx, "{}"))
@@ -60,8 +71,9 @@ def test_compute_planning_context_success(
     session_factory: Callable[[str], None],
 ) -> None:
     session_id = "planning-success"
+    user_id = "test-user-planning-2"
     session_factory(session_id)
-    _, session = session_manager.get_or_create_session(session_id)
+    _, session = session_manager.get_or_create_session(session_id, user_id=user_id)
     submission = build_submission()
     intake_payload = json.dumps({"submission": submission.model_dump()})
     intake_ctx = create_intake_context(session_id, intake_payload)

@@ -9,6 +9,8 @@ from app.agents.tools.planning_tool import compute_planning_context
 from app.agents.tools.optimization_tool import run_mix_optimization
 from app.models.context import ChatRunContext
 from app.services import session_manager
+from app.db.session import SessionLocal
+from app.services.session_repository import SessionRepository
 from tests.factories import build_submission
 from tests.async_utils import run_async
 
@@ -19,12 +21,20 @@ def session_factory() -> Iterator[Callable[[str], None]]:
 
     def _prepare(session_id: str) -> None:
         session_manager._session_cache.pop(session_id, None)
+        with SessionLocal() as db:
+            repo = SessionRepository(db)
+            repo.delete_session(session_id)
+            db.commit()
         created.append(session_id)
 
     yield _prepare
 
     for session_id in created:
         session_manager._session_cache.pop(session_id, None)
+        with SessionLocal() as db:
+            repo = SessionRepository(db)
+            repo.delete_session(session_id)
+            db.commit()
 
 
 def create_context(
@@ -42,8 +52,9 @@ def test_run_mix_optimization_requires_planning(
     session_factory: Callable[[str], None],
 ) -> None:
     session_id = "opt-no-planning"
+    user_id = "test-user-opt-1"
     session_factory(session_id)
-    _, session = session_manager.get_or_create_session(session_id)
+    _, session = session_manager.get_or_create_session(session_id, user_id=user_id)
     submission = build_submission()
     intake_payload = json.dumps({"submission": submission.model_dump()})
     intake_ctx = create_context(session_id, submit_intake_record.name, intake_payload)
@@ -56,8 +67,9 @@ def test_run_mix_optimization_requires_planning(
 
 def test_run_mix_optimization_success(session_factory: Callable[[str], None]) -> None:
     session_id = "opt-success"
+    user_id = "test-user-opt-2"
     session_factory(session_id)
-    _, session = session_manager.get_or_create_session(session_id)
+    _, session = session_manager.get_or_create_session(session_id, user_id=user_id)
     submission = build_submission()
     intake_payload = json.dumps({"submission": submission.model_dump()})
     intake_ctx = create_context(session_id, submit_intake_record.name, intake_payload)

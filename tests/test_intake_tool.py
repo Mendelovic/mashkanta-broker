@@ -7,6 +7,8 @@ from agents.tool_context import ToolContext
 from app.agents.tools.intake_tool import submit_intake_record
 from app.models.context import ChatRunContext
 from app.services import session_manager
+from app.db.session import SessionLocal
+from app.services.session_repository import SessionRepository
 
 from .factories import build_submission
 from .async_utils import run_async
@@ -18,11 +20,20 @@ def cleanup_session() -> Iterator[Callable[[str], None]]:
 
     def _register(session_id: str) -> None:
         created_ids.append(session_id)
+        session_manager._session_cache.pop(session_id, None)
+        with SessionLocal() as db:
+            repo = SessionRepository(db)
+            repo.delete_session(session_id)
+            db.commit()
 
     yield _register
 
     for session_id in created_ids:
         session_manager._session_cache.pop(session_id, None)
+        with SessionLocal() as db:
+            repo = SessionRepository(db)
+            repo.delete_session(session_id)
+            db.commit()
 
 
 def create_tool_context(session_id: str, payload: str) -> ToolContext[ChatRunContext]:
@@ -38,10 +49,11 @@ def test_submit_intake_record_persists_revision(
     cleanup_session: Callable[[str], None],
 ) -> None:
     session_id = "test-intake-session"
+    user_id = "test-user-intake"
     cleanup_session(session_id)
     session_manager._session_cache.pop(session_id, None)
 
-    _, session = session_manager.get_or_create_session(session_id)
+    _, session = session_manager.get_or_create_session(session_id, user_id=user_id)
     submission = build_submission()
     arguments = json.dumps({"submission": submission.model_dump()})
     tool_ctx = create_tool_context(session_id, arguments)
