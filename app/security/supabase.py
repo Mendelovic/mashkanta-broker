@@ -9,6 +9,8 @@ from urllib.parse import urljoin
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
+import httpx
+from time import time
 
 from ..config import settings
 
@@ -39,24 +41,70 @@ def _build_issuer() -> str:
     return urljoin(base, "auth/v1")
 
 
-def _validate_config() -> tuple[str, str, str]:
-    """Read config values needed for token verification."""
-    if not settings.supabase_jwt_secret:
+def _jwks_url() -> str:
+    if settings.supabase_jwks_url:
+        return settings.supabase_jwks_url
+    if not settings.supabase_project_url:
         raise RuntimeError(
-            "Supabase JWT secret is not configured. "
-            "Set SUPABASE_JWT_SECRET before enabling authenticated endpoints."
+            "Supabase project URL is not configured. "
+            "Set SUPABASE_PROJECT_URL before enabling authenticated endpoints."
         )
+    base = settings.supabase_project_url.rstrip("/") + "/"
+    return urljoin(base, "auth/v1/.well-known/jwks.json")
+
+
+def _validate_config() -> tuple[str, str, str, str]:
+    """Read config values needed for token verification."""
     audience = settings.supabase_jwt_audience or "authenticated"
     issuer = _build_issuer()
-    return settings.supabase_jwt_secret, audience, issuer
+    jwks_url = _jwks_url()
+    return jwks_url, audience, issuer, settings.supabase_project_url or ""
+
+
+_JWKS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _get_jwks(jwks_url: str) -> dict[str, Any]:
+    ttl = max(settings.supabase_jwks_cache_ttl_seconds, 60)
+    cached = _JWKS_CACHE.get(jwks_url)
+    now = time()
+    if cached and now - cached[0] < ttl:
+        return cached[1]
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            response = client.get(jwks_url)
+            response.raise_for_status()
+            jwks = response.json()
+    except httpx.HTTPError as exc:  # pragma: no cover - network failure
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to fetch Supabase signing keys",
+        ) from exc
+
+    _JWKS_CACHE[jwks_url] = (now, jwks)
+    return jwks
+
+
+def _build_key(token: str, jwks_url: str) -> dict[str, Any]:
+    jwks = _get_jwks(jwks_url)
+    header = jwt.get_unverified_header(token)
+    kid = header.get("kid")
+    if not kid:
+        raise JWTError("Supabase token missing key id")
+    keys = jwks.get("keys", [])
+    for key in keys:
+        if key.get("kid") == kid:
+            return key
+    raise JWTError("Supabase signing key not found for token")
 
 
 def _decode_token(token: str) -> Dict[str, Any]:
-    secret, audience, issuer = _validate_config()
+    jwks_url, audience, issuer, _ = _validate_config()
+    key = _build_key(token, jwks_url)
     return jwt.decode(
         token,
-        secret,
-        algorithms=["HS256"],
+        key,
         audience=audience,
         issuer=issuer,
     )

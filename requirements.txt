@@ -11,3 +11,4 @@ numpy
 pandas
 pyyaml
 python-jose[cryptography]
+httpx

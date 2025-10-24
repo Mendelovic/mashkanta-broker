@@ -28,9 +28,10 @@ class Settings(BaseSettings):
 
     # Supabase Auth Configuration
     supabase_project_url: Optional[str] = None
-    supabase_jwt_secret: Optional[str] = None
     supabase_jwt_audience: str = "authenticated"
     supabase_jwt_issuer: Optional[str] = None
+    supabase_jwks_url: Optional[str] = None
+    supabase_jwks_cache_ttl_seconds: int = 300
 
     # Session Management Configuration
     default_session_prefix: str = "mortgage_session_"
