@@ -28,9 +28,9 @@ class Settings(BaseSettings):
     """Application settings with environment variable loading."""
 
     # API Configuration
-    app_name: str = "mortgage-broker"
-    app_version: str = "1.0.0"
-    debug: bool = False
+    app_name = "mortgage-broker"
+    app_version = "1.0.0"
+    debug = False
 
     # OpenAI Configuration
     openai_api_key: Optional[str] = None
