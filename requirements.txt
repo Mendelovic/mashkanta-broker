@@ -6,9 +6,6 @@ pydantic>=2
 pydantic-settings
 azure-ai-documentintelligence
 python-multipart
-aiohttp
-numpy
-pandas
 pyyaml
 python-jose[cryptography]
 httpx
