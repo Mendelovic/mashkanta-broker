@@ -1,0 +1,25 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Environment / tooling
+.venv/
+.env
+.env.*
+
+# Build / cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# SCM
+.git
+.gitignore
+
+# OS files
+*.swp
+*.DS_Store
+
+# Tests (optional for runtime image)
+tests/
