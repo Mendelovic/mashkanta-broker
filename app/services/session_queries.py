@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, List, Optional, cast
 
 from ..db import SessionLocal
 from ..models.session import SessionDetail, SessionMessageModel, SessionSummary
@@ -10,6 +10,16 @@ from .chat_payload import build_optimization_payload
 from .session_manager import get_session
 from .session_repository import SessionRepository
 from .session_snapshot import gather_session_state
+
+
+def _is_reasoning_message(payload: object) -> bool:
+    return isinstance(payload, dict) and payload.get("type") == "reasoning"
+
+
+def _normalize_message_content(payload: object) -> dict[str, Any]:
+    if isinstance(payload, dict):
+        return cast(dict[str, Any], payload)
+    return {"value": payload}
 
 
 def list_user_sessions(user_id: str, limit: Optional[int] = None) -> List[SessionSummary]:
@@ -21,21 +31,21 @@ def list_user_sessions(user_id: str, limit: Optional[int] = None) -> List[Sessio
 
         summaries: List[SessionSummary] = []
         for record in records:
-            latest_message_row = repo.get_latest_message(record.session_id)
-            message_count = repo.count_messages(record.session_id)
+            message_rows = repo.list_messages(record.session_id)
+            filtered_rows = [
+                row for row in message_rows if not _is_reasoning_message(row.content)
+            ]
+            message_count = len(filtered_rows)
 
-            latest_message = (
-                SessionMessageModel(
-                    id=latest_message_row.id,
-                    role=latest_message_row.role,
-                    content=latest_message_row.content
-                    if isinstance(latest_message_row.content, dict)
-                    else {"value": latest_message_row.content},
-                    created_at=latest_message_row.created_at,
+            latest_message = None
+            if filtered_rows:
+                latest = filtered_rows[-1]
+                latest_message = SessionMessageModel(
+                    id=latest.id,
+                    role=latest.role,
+                    content=_normalize_message_content(latest.content),
+                    created_at=latest.created_at,
                 )
-                if latest_message_row is not None
-                else None
-            )
 
             summaries.append(
                 SessionSummary(
@@ -81,23 +91,24 @@ def get_session_detail(session_id: str, user_id: str) -> SessionDetail | None:
         advisor_recommended_index,
     ) = build_optimization_payload(optimization_result)
 
-    messages = [
-        SessionMessageModel(
-            id=row.id,
-            role=row.role,
-            content=row.content
-            if isinstance(row.content, dict)
-            else {"value": row.content},
-            created_at=row.created_at,
+    message_models: List[SessionMessageModel] = []
+    for row in message_rows:
+        if _is_reasoning_message(row.content):
+            continue
+        message_models.append(
+            SessionMessageModel(
+                id=row.id,
+                role=row.role,
+                content=_normalize_message_content(row.content),
+                created_at=row.created_at,
+            )
         )
-        for row in message_rows
-    ]
 
     return SessionDetail(
         session_id=record.session_id,
         created_at=record.created_at,
         updated_at=record.updated_at,
-        messages=messages,
+        messages=message_models,
         timeline=timeline_state or {},
         intake=intake_state or {},
         planning=planning_state,

@@ -83,7 +83,7 @@ def test_get_session_purges_expired_entries():
     assert session_id in session_manager._session_cache
 
 
-def test_reasoning_messages_filtered_from_storage():
+def test_reasoning_messages_retained_in_storage():
     session_id, session = session_manager.get_or_create_session(
         None, user_id="reasoning-user"
     )
@@ -104,17 +104,13 @@ def test_reasoning_messages_filtered_from_storage():
     )
 
     stored_items = run_async(session.get_items())
-    assert len(stored_items) == 1
-    stored_message = cast(dict[str, Any], stored_items[0])
-    assert stored_message.get("role") == "user"
+    assert len(stored_items) == 2
 
     try:
         with SessionLocal() as db:
             repo = SessionRepository(db)
             persisted = repo.list_messages(session_id)
-            assert len(persisted) == 1
-            persisted_payload = cast(dict[str, Any], persisted[0].content)
-            assert persisted_payload.get("role") == "user"
+            assert len(persisted) == 2
     finally:
         with SessionLocal() as db:
             repo = SessionRepository(db)

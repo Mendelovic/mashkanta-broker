@@ -44,10 +44,6 @@ def _utcnow() -> datetime:
     return datetime.now()
 
 
-def _is_reasoning_payload(item: Any) -> bool:
-    return isinstance(item, dict) and item.get("type") == "reasoning"
-
-
 def _generate_session_id() -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     unique_part = uuid.uuid4().hex[:8]
@@ -289,12 +285,7 @@ class PersistentSession(SessionABC):
     async def add_items(self, items: list[TResponseInputItem]) -> None:
         if not items:
             return
-        filtered_items: list[TResponseInputItem] = [
-            item for item in items if not _is_reasoning_payload(item)
-        ]
-        if not filtered_items:
-            return
-        payload = cast(list[TResponseInputItem], copy.deepcopy(filtered_items))
+        payload = cast(list[TResponseInputItem], copy.deepcopy(items))
         with self._lock:
             self._items.extend(payload)
         await asyncio.get_running_loop().run_in_executor(
@@ -447,13 +438,8 @@ class PersistentSession(SessionABC):
     # ------------------------------------------------------------------
 
     def _append_messages(self, items: list[TResponseInputItem]) -> None:
-        filtered: list[TResponseInputItem] = [
-            item for item in items if not _is_reasoning_payload(item)
-        ]
-        if not filtered:
-            return
         dict_items: list[dict[str, Any]] = [
-            cast(dict[str, Any], item) for item in filtered if isinstance(item, dict)
+            cast(dict[str, Any], item) for item in items if isinstance(item, dict)
         ]
         if not dict_items:
             return
