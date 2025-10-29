@@ -66,6 +66,7 @@ def test_list_user_sessions_honors_limit(
     session_cleanup: Callable[[str], None],
 ) -> None:
     user_id = "limit-user"
+    _create_session(user_id, session_cleanup)
     second_id = _create_session(user_id, session_cleanup)
 
     summaries_all = list_user_sessions(user_id)
