@@ -68,6 +68,26 @@ class SessionRepository:
         result = self._db.execute(stmt)
         return list(result.scalars())
 
+    def count_messages(self, session_id: str) -> int:
+        stmt = (
+            select(func.count(models.SessionMessage.id))
+            .where(models.SessionMessage.session_id == session_id)
+            .select_from(models.SessionMessage)
+        )
+        return int(self._db.execute(stmt).scalar_one())
+
+    def get_latest_message(
+        self, session_id: str
+    ) -> Optional[models.SessionMessage]:
+        stmt = (
+            select(models.SessionMessage)
+            .where(models.SessionMessage.session_id == session_id)
+            .order_by(models.SessionMessage.created_at.desc(), models.SessionMessage.id.desc())
+            .limit(1)
+        )
+        result = self._db.execute(stmt)
+        return result.scalar_one_or_none()
+
     def pop_last_message(self, session_id: str) -> Optional[models.SessionMessage]:
         stmt = (
             select(models.SessionMessage)
@@ -206,6 +226,19 @@ class SessionRepository:
         self, session_id: str
     ) -> Optional[models.SessionOptimizationResult]:
         return self._db.get(models.SessionOptimizationResult, session_id)
+
+    def list_sessions_for_user(
+        self, user_id: str, limit: Optional[int] = None
+    ) -> list[models.UserSession]:
+        stmt = (
+            select(models.UserSession)
+            .where(models.UserSession.user_id == user_id)
+            .order_by(models.UserSession.updated_at.desc())
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        result = self._db.execute(stmt)
+        return list(result.scalars())
 
     def delete_session(self, session_id: str) -> None:
         record = self._db.get(models.UserSession, session_id)

@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from app.config import settings
-from app.routers import chat_router, timeline_router
+from app.routers import chat_router, sessions_router, timeline_router
 from app.utils import setup_logging
 from app.agents.orchestrator import create_mortgage_broker_orchestrator
 
@@ -51,6 +51,7 @@ app.add_middleware(
 )
 
 app.include_router(chat_router)
+app.include_router(sessions_router)
 app.include_router(timeline_router)
 
 

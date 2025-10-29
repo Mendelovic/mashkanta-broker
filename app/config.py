@@ -28,9 +28,9 @@ class Settings(BaseSettings):
     """Application settings with environment variable loading."""
 
     # API Configuration
-    app_name = "mortgage-broker"
-    app_version = "1.0.0"
-    debug = False
+    app_name: str = "mortgage-broker"
+    app_version: str = "1.0.0"
+    debug: bool = False
 
     # OpenAI Configuration
     openai_api_key: Optional[str] = None
@@ -39,9 +39,9 @@ class Settings(BaseSettings):
     azure_doc_intel_endpoint: Optional[str] = None
     azure_doc_intel_key: Optional[str] = None
 
-    # CORS Configuration - relaxed defaults for development
-    cors_origins: list[str] = ["*"]  # Allow all origins
-    cors_allow_credentials: bool = False  # Must be False when using "*"
+    # CORS Configuration
+    cors_origins: list[str] = ["http://localhost:5173"]
+    cors_allow_credentials: bool = True
     cors_allow_methods: list[str] = ["*"]
     cors_allow_headers: list[str] = ["*"]
 

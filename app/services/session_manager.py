@@ -9,7 +9,7 @@ import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, Optional, Tuple, Iterable
+from typing import Any, Callable, Dict, Optional, Tuple, Iterable, cast
 
 from agents.items import TResponseInputItem
 from agents.memory.session import SessionABC
@@ -42,6 +42,10 @@ _cache_lock = threading.RLock()
 
 def _utcnow() -> datetime:
     return datetime.now()
+
+
+def _is_reasoning_payload(item: Any) -> bool:
+    return isinstance(item, dict) and item.get("type") == "reasoning"
 
 
 def _generate_session_id() -> str:
@@ -115,10 +119,16 @@ def _intake_store_from_records(
         if not record_data:
             continue
         try:
+            confirmed_at_raw = payload.get("confirmed_at")
+            if isinstance(confirmed_at_raw, str):
+                confirmed_at = datetime.fromisoformat(confirmed_at_raw)
+            else:
+                confirmed_at = _utcnow()
+
             revision = IntakeRevision(
                 version=int(payload.get("version", len(revisions) + 1)),
                 record=InterviewRecord.model_validate(record_data),
-                confirmed_at=datetime.fromisoformat(payload.get("confirmed_at")),
+                confirmed_at=confirmed_at,
                 confirmation_notes=list(payload.get("confirmation_notes", [])),
             )
             revisions.append(revision)
@@ -236,10 +246,14 @@ class PersistentSession(SessionABC):
 
         timeline_state = _timeline_from_dict(timeline_dict)
 
+        message_items: list[TResponseInputItem] = [
+            cast(TResponseInputItem, message) for message in messages
+        ]
+
         return cls(
             session_id=session_id,
             owner_user_id=record.user_id,
-            items=messages,
+            items=message_items,
             timeline=timeline_state,
             intake_store=intake_store,
             planning_context=planning_context,
@@ -267,15 +281,20 @@ class PersistentSession(SessionABC):
     async def get_items(self, limit: Optional[int] = None) -> list[TResponseInputItem]:
         with self._lock:
             if limit is None:
-                snapshot = list(self._items)
+                snapshot: list[TResponseInputItem] = list(self._items)
             else:
                 snapshot = self._items[-limit:]
-        return copy.deepcopy(snapshot)
+        return cast(list[TResponseInputItem], copy.deepcopy(snapshot))
 
     async def add_items(self, items: list[TResponseInputItem]) -> None:
         if not items:
             return
-        payload = copy.deepcopy(items)
+        filtered_items: list[TResponseInputItem] = [
+            item for item in items if not _is_reasoning_payload(item)
+        ]
+        if not filtered_items:
+            return
+        payload = cast(list[TResponseInputItem], copy.deepcopy(filtered_items))
         with self._lock:
             self._items.extend(payload)
         await asyncio.get_running_loop().run_in_executor(
@@ -289,7 +308,7 @@ class PersistentSession(SessionABC):
             await asyncio.get_running_loop().run_in_executor(
                 None, self._pop_last_message
             )
-        return copy.deepcopy(item)
+        return cast(TResponseInputItem | None, copy.deepcopy(item))
 
     async def clear_session(self) -> None:
         with self._lock:
@@ -428,9 +447,19 @@ class PersistentSession(SessionABC):
     # ------------------------------------------------------------------
 
     def _append_messages(self, items: list[TResponseInputItem]) -> None:
+        filtered: list[TResponseInputItem] = [
+            item for item in items if not _is_reasoning_payload(item)
+        ]
+        if not filtered:
+            return
+        dict_items: list[dict[str, Any]] = [
+            cast(dict[str, Any], item) for item in filtered if isinstance(item, dict)
+        ]
+        if not dict_items:
+            return
         with SessionLocal() as db:
             repo = SessionRepository(db)
-            repo.append_messages(self.session_id, items)
+            repo.append_messages(self.session_id, dict_items)
             db.commit()
 
     def _pop_last_message(self) -> None:

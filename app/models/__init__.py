@@ -8,6 +8,7 @@ from .timeline import (
     TimelineState,
 )
 from .intake import IntakeRevision, IntakeStore
+from .session import SessionMessageModel, SessionSummary, SessionDetail
 
 __all__ = [
     "ChatRunContext",
@@ -19,4 +20,7 @@ __all__ = [
     "TimelineState",
     "IntakeRevision",
     "IntakeStore",
+    "SessionMessageModel",
+    "SessionSummary",
+    "SessionDetail",
 ]
