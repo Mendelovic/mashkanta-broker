@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     # CORS Configuration
     cors_origins: list[str] = [
         "http://localhost:5173",
-        "https://mortgage-broker-svelte.vercel.app/",
+        "https://mortgage-broker-svelte.vercel.app",
     ]
     cors_allow_credentials: bool = True
     cors_allow_methods: list[str] = ["*"]
