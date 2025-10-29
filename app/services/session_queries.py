@@ -12,17 +12,15 @@ from .session_repository import SessionRepository
 from .session_snapshot import gather_session_state
 
 
-def _is_reasoning_message(payload: object) -> bool:
-    return isinstance(payload, dict) and payload.get("type") == "reasoning"
-
-
 def _normalize_message_content(payload: object) -> dict[str, Any]:
     if isinstance(payload, dict):
         return cast(dict[str, Any], payload)
     return {"value": payload}
 
 
-def list_user_sessions(user_id: str, limit: Optional[int] = None) -> List[SessionSummary]:
+def list_user_sessions(
+    user_id: str, limit: Optional[int] = None
+) -> List[SessionSummary]:
     """Return session summaries for a given user ordered by most recent update."""
 
     with SessionLocal() as db:
@@ -31,15 +29,12 @@ def list_user_sessions(user_id: str, limit: Optional[int] = None) -> List[Sessio
 
         summaries: List[SessionSummary] = []
         for record in records:
-            message_rows = repo.list_messages(record.session_id)
-            filtered_rows = [
-                row for row in message_rows if not _is_reasoning_message(row.content)
-            ]
-            message_count = len(filtered_rows)
+            message_rows = repo.list_transcript_messages(record.session_id)
+            message_count = len(message_rows)
 
             latest_message = None
-            if filtered_rows:
-                latest = filtered_rows[-1]
+            if message_rows:
+                latest = message_rows[-1]
                 latest_message = SessionMessageModel(
                     id=latest.id,
                     role=latest.role,
@@ -68,7 +63,7 @@ def get_session_detail(session_id: str, user_id: str) -> SessionDetail | None:
         record = repo.get_session(session_id, user_id=user_id)
         if record is None:
             return None
-        message_rows = repo.list_messages(session_id)
+        message_rows = repo.list_transcript_messages(session_id)
 
     session = get_session(session_id, user_id=user_id)
     if session is None:
@@ -93,8 +88,6 @@ def get_session_detail(session_id: str, user_id: str) -> SessionDetail | None:
 
     message_models: List[SessionMessageModel] = []
     for row in message_rows:
-        if _is_reasoning_message(row.content):
-            continue
         message_models.append(
             SessionMessageModel(
                 id=row.id,

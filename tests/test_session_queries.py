@@ -136,3 +136,5 @@ def test_reasoning_entries_hidden_from_api(
         repo = SessionRepository(db)
         persisted = repo.list_messages(session_id)
         assert len(persisted) == 3
+        transcript = repo.list_transcript_messages(session_id)
+        assert [row.role for row in transcript] == ["user", "assistant"]

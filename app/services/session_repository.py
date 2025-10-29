@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Iterable, Optional
 
-from sqlalchemy import delete, select, update, func
+from sqlalchemy import delete, func, select, text, update
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
 
 from ..db import models
+
+
+@dataclass(frozen=True)
+class SessionTranscriptMessage:
+    """Lightweight row wrapper for transcript-safe conversation items."""
+
+    id: int
+    session_id: str
+    role: str
+    content: dict[str, Any]
+    created_at: datetime
 
 
 class SessionRepository:
@@ -68,6 +82,60 @@ class SessionRepository:
         result = self._db.execute(stmt)
         return list(result.scalars())
 
+    def list_transcript_messages(
+        self, session_id: str
+    ) -> list[SessionTranscriptMessage]:
+        stmt = text(
+            """
+            SELECT id, session_id, role, content, created_at
+            FROM session_transcript_messages
+            WHERE session_id = :session_id
+            ORDER BY created_at, id
+            """
+        )
+        try:
+            result = self._db.execute(stmt, {"session_id": session_id})
+        except ProgrammingError:
+            self._db.rollback()
+            messages: list[SessionTranscriptMessage] = []
+            for row in self.list_messages(session_id):
+                if self._is_transcript_candidate(row.role, row.content):
+                    messages.append(
+                        SessionTranscriptMessage(
+                            id=row.id,
+                            session_id=row.session_id,
+                            role=row.role,
+                            content=row.content,
+                            created_at=row.created_at,
+                        )
+                    )
+            return messages
+
+        return [
+            SessionTranscriptMessage(
+                id=row["id"],
+                session_id=row["session_id"],
+                role=row["role"],
+                content=row["content"],
+                created_at=row["created_at"],
+            )
+            for row in result.mappings()
+        ]
+
+    @staticmethod
+    def _is_transcript_candidate(role: str, payload: Any) -> bool:
+        if role not in {"user", "assistant", "system", "developer"}:
+            return False
+        if not isinstance(payload, dict):
+            return False
+        item_type = str(payload.get("type") or "")
+        return item_type not in {
+            "reasoning",
+            "function_call",
+            "function_call_output",
+            "tool_result",
+        }
+
     def count_messages(self, session_id: str) -> int:
         stmt = (
             select(func.count(models.SessionMessage.id))
@@ -76,13 +144,13 @@ class SessionRepository:
         )
         return int(self._db.execute(stmt).scalar_one())
 
-    def get_latest_message(
-        self, session_id: str
-    ) -> Optional[models.SessionMessage]:
+    def get_latest_message(self, session_id: str) -> Optional[models.SessionMessage]:
         stmt = (
             select(models.SessionMessage)
             .where(models.SessionMessage.session_id == session_id)
-            .order_by(models.SessionMessage.created_at.desc(), models.SessionMessage.id.desc())
+            .order_by(
+                models.SessionMessage.created_at.desc(), models.SessionMessage.id.desc()
+            )
             .limit(1)
         )
         result = self._db.execute(stmt)
