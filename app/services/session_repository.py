@@ -295,6 +295,68 @@ class SessionRepository:
     ) -> Optional[models.SessionOptimizationResult]:
         return self._db.get(models.SessionOptimizationResult, session_id)
 
+    def upsert_document_artifact(
+        self,
+        session_id: str,
+        artifact_id: str,
+        *,
+        display_name: str,
+        original_filename: Optional[str],
+        mime_type: Optional[str],
+        document_type: str,
+        extract: Optional[dict[str, Any]],
+        extracted_at: Optional[datetime],
+    ) -> models.SessionDocumentArtifact:
+        record = self._db.get(models.SessionDocumentArtifact, artifact_id)
+        if record is None:
+            record = models.SessionDocumentArtifact(
+                id=artifact_id,
+                session_id=session_id,
+                display_name=display_name,
+                original_filename=original_filename,
+                mime_type=mime_type,
+                document_type=document_type,
+                extract=extract,
+                extracted_at=extracted_at,
+            )
+            self._db.add(record)
+        else:
+            if record.session_id != session_id:
+                raise PermissionError("Document artifact does not belong to session")
+            record.display_name = display_name
+            record.original_filename = original_filename
+            record.mime_type = mime_type
+            record.document_type = document_type
+            record.extract = extract
+            record.extracted_at = extracted_at
+        self._db.flush()
+        return record
+
+    def list_document_artifacts(
+        self, session_id: str
+    ) -> list[models.SessionDocumentArtifact]:
+        stmt = (
+            select(models.SessionDocumentArtifact)
+            .where(models.SessionDocumentArtifact.session_id == session_id)
+            .order_by(models.SessionDocumentArtifact.uploaded_at)
+        )
+        result = self._db.execute(stmt)
+        return list(result.scalars())
+
+    def delete_document_artifact(self, session_id: str, artifact_id: str) -> None:
+        record = self._db.get(models.SessionDocumentArtifact, artifact_id)
+        if record is not None and record.session_id == session_id:
+            self._db.delete(record)
+            self._db.flush()
+
+    def clear_document_artifacts(self, session_id: str) -> None:
+        self._db.execute(
+            delete(models.SessionDocumentArtifact).where(
+                models.SessionDocumentArtifact.session_id == session_id
+            )
+        )
+        self._db.flush()
+
     def list_sessions_for_user(
         self, user_id: str, limit: Optional[int] = None
     ) -> list[models.UserSession]:

@@ -76,6 +76,7 @@ def get_session_detail(session_id: str, user_id: str) -> SessionDetail | None:
         optimization_result,
         optimization_state,
     ) = gather_session_state(session)
+    documents = session.document_summaries()
 
     (
         optimization_candidates,
@@ -112,6 +113,7 @@ def get_session_detail(session_id: str, user_id: str) -> SessionDetail | None:
         engine_recommended_index=engine_recommended_index,
         advisor_recommended_index=advisor_recommended_index,
         term_sweep=term_sweep_rows or None,
+        documents=documents or None,
     )
 
 

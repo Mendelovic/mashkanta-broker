@@ -11,3 +11,4 @@ python-jose[cryptography]
 httpx
 SQLAlchemy>=2.0
 psycopg2-binary
+aiohttp

@@ -6,6 +6,8 @@ from typing import Any, List, Optional
 
 from pydantic import BaseModel
 
+from .documents import DocumentArtifactSummary
+
 
 class CandidateShares(BaseModel):
     fixed_unindexed_pct: float
@@ -131,6 +133,7 @@ class ChatResponse(BaseModel):
     engine_recommended_index: Optional[int] = None
     advisor_recommended_index: Optional[int] = None
     term_sweep: Optional[List[OptimizationTermSweepEntry]] = None
+    documents: Optional[List[DocumentArtifactSummary]] = None
 
 
 __all__ = [
@@ -143,5 +146,6 @@ __all__ = [
     "ComparisonRow",
     "OptimizationSummary",
     "OptimizationTermSweepEntry",
+    "DocumentArtifactSummary",
     "ChatResponse",
 ]

@@ -13,6 +13,7 @@ from .chat_response import (
     OptimizationSummary,
     OptimizationTermSweepEntry,
 )
+from .documents import DocumentArtifactSummary
 
 
 class SessionMessageModel(BaseModel):
@@ -45,6 +46,7 @@ class SessionDetail(BaseModel):
     engine_recommended_index: Optional[int] = None
     advisor_recommended_index: Optional[int] = None
     term_sweep: Optional[List[OptimizationTermSweepEntry]] = None
+    documents: Optional[List[DocumentArtifactSummary]] = None
 
 
 __all__ = ["SessionMessageModel", "SessionSummary", "SessionDetail"]

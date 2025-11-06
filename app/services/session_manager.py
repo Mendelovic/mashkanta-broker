@@ -8,7 +8,7 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional, Tuple, Iterable, cast
 
 from agents.items import TResponseInputItem
@@ -32,6 +32,11 @@ from ..models.timeline import (
     TimelineStage,
     TimelineState,
 )
+from ..models.documents import (
+    DocumentArtifact,
+    DocumentArtifactSummary,
+    DocumentExtract,
+)
 from .session_repository import SessionRepository
 
 logger = logging.getLogger(__name__)
@@ -40,14 +45,25 @@ TimelineUpdatePayload = Dict[str, Any]
 _cache_lock = threading.RLock()
 
 
+_LOCAL_TIMEZONE = datetime.now(timezone.utc).astimezone().tzinfo or timezone.utc
+
+
 def _utcnow() -> datetime:
-    return datetime.now()
+    return datetime.now(timezone.utc)
 
 
 def _generate_session_id() -> str:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     unique_part = uuid.uuid4().hex[:8]
     return f"{settings.default_session_prefix}{timestamp}_{unique_part}"
+
+
+def _ensure_utc(dt: datetime) -> datetime:
+    """Return a timezone-aware UTC datetime, coercing naive values if needed."""
+    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
+        localized = dt.replace(tzinfo=_LOCAL_TIMEZONE)
+        return localized.astimezone(timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _timeline_from_dict(data: Dict[str, Any]) -> TimelineState:
@@ -138,10 +154,56 @@ def _revision_to_dict(revision: IntakeRevision) -> Dict[str, Any]:
     return revision.to_dict()
 
 
+def _document_extract_from_payload(
+    payload: Optional[dict[str, Any]],
+) -> DocumentExtract | None:
+    if not payload:
+        return None
+    try:
+        return DocumentExtract.model_validate(payload)
+    except ValidationError as exc:
+        logger.warning("Failed to deserialize document extract: %s", exc)
+        return None
+
+
+def _documents_from_records(
+    records: Iterable[models.SessionDocumentArtifact],
+) -> dict[str, DocumentArtifact]:
+    artifacts: dict[str, DocumentArtifact] = {}
+    for row in records:
+        extract = _document_extract_from_payload(row.extract)
+        try:
+            artifact = DocumentArtifact(
+                id=row.id,
+                display_name=row.display_name,
+                original_filename=row.original_filename,
+                mime_type=row.mime_type,
+                document_type=row.document_type or "unknown",
+                uploaded_at=row.uploaded_at or _utcnow(),
+                extracted_at=row.extracted_at,
+                extract=extract,
+            )
+        except ValidationError as exc:
+            logger.warning(
+                "Failed to deserialize document artifact %s: %s", row.id, exc
+            )
+            continue
+        artifacts[row.id] = artifact
+    return artifacts
+
+
 @dataclass
 class _SessionEntry:
     session: "PersistentSession"
     last_access: datetime
+
+
+def _ensure_and_update_last_access(entry: _SessionEntry) -> datetime:
+    """Normalize cached timestamps to UTC to avoid naive/aware comparisons."""
+    normalized = _ensure_utc(entry.last_access)
+    if normalized is not entry.last_access:
+        entry.last_access = normalized
+    return normalized
 
 
 class PersistentSession(SessionABC):
@@ -156,6 +218,7 @@ class PersistentSession(SessionABC):
         intake_store: IntakeStore,
         planning_context: PlanningContext | None,
         optimization_result: OptimizationResult | None,
+        documents: dict[str, DocumentArtifact] | None,
     ) -> None:
         self.session_id = session_id
         self._owner_user_id = owner_user_id
@@ -164,7 +227,11 @@ class PersistentSession(SessionABC):
         self._intake = intake_store
         self._planning_context = planning_context
         self._optimization_result = optimization_result
+        self._documents = documents or {}
+        self._temp_path_index: dict[str, str] = {}
+        self._document_temp_paths: dict[str, str] = {}
         self._timeline_watchers: set[asyncio.Queue[TimelineUpdatePayload]] = set()
+        self._ephemeral_items: dict[str, TResponseInputItem] = {}
         self._lock = threading.RLock()
 
     # ------------------------------------------------------------------
@@ -220,6 +287,7 @@ class PersistentSession(SessionABC):
             )
             planning_dict = repo.get_planning_context(session_id)
             optimization_model = repo.get_optimization_result(session_id)
+            document_rows = repo.list_document_artifacts(session_id)
 
         planning_context = (
             PlanningContext.model_validate(planning_dict)
@@ -241,6 +309,7 @@ class PersistentSession(SessionABC):
             )
 
         timeline_state = _timeline_from_dict(timeline_dict)
+        documents = _documents_from_records(document_rows)
 
         message_items: list[TResponseInputItem] = [
             cast(TResponseInputItem, message) for message in messages
@@ -254,6 +323,7 @@ class PersistentSession(SessionABC):
             intake_store=intake_store,
             planning_context=planning_context,
             optimization_result=optimization_result,
+            documents=documents,
         )
 
     # ------------------------------------------------------------------
@@ -308,6 +378,10 @@ class PersistentSession(SessionABC):
             self._intake.clear()
             self._planning_context = None
             self._optimization_result = None
+            self._documents.clear()
+            self._temp_path_index.clear()
+            self._document_temp_paths.clear()
+            self._ephemeral_items.clear()
             watchers = list(self._timeline_watchers)
             payload = self._timeline.to_dict()
         await asyncio.get_running_loop().run_in_executor(None, self._clear_persistence)
@@ -402,6 +476,142 @@ class PersistentSession(SessionABC):
             )
 
     # ------------------------------------------------------------------
+    # Document artifact helpers
+    # ------------------------------------------------------------------
+
+    def list_documents(self) -> list[DocumentArtifact]:
+        with self._lock:
+            return [
+                artifact.model_copy(deep=True) for artifact in self._documents.values()
+            ]
+
+    def document_summaries(self) -> list[DocumentArtifactSummary]:
+        summaries: list[DocumentArtifactSummary] = []
+        with self._lock:
+            for artifact in self._documents.values():
+                extract = artifact.extract
+                summaries.append(
+                    DocumentArtifactSummary(
+                        id=artifact.id,
+                        display_name=artifact.display_name,
+                        document_type=artifact.document_type,
+                        uploaded_at=artifact.uploaded_at,
+                        extracted_at=artifact.extracted_at,
+                        mime_type=artifact.mime_type,
+                        locale=extract.locale if extract else None,
+                        warnings=list(extract.warnings) if extract else [],
+                        key_value_pairs=[
+                            item.model_copy(deep=True)
+                            for item in extract.key_value_pairs
+                        ]
+                        if extract
+                        else [],
+                        tables=[table.model_copy(deep=True) for table in extract.tables]
+                        if extract
+                        else [],
+                        text_preview=extract.text_preview if extract else None,
+                        text_truncated=extract.text_truncated if extract else False,
+                    )
+                )
+        return summaries
+
+    def get_document(self, document_id: str) -> DocumentArtifact | None:
+        with self._lock:
+            artifact = self._documents.get(document_id)
+            return artifact.model_copy(deep=True) if artifact else None
+
+    def register_document_stub(
+        self,
+        document_id: str,
+        *,
+        display_name: str,
+        original_filename: str | None,
+        mime_type: str | None,
+        document_type: str,
+        temp_path: str,
+    ) -> DocumentArtifact:
+        uploaded_at = _utcnow()
+        with self._lock:
+            artifact = DocumentArtifact(
+                id=document_id,
+                display_name=display_name,
+                original_filename=original_filename,
+                mime_type=mime_type,
+                document_type=document_type or "unknown",
+                uploaded_at=uploaded_at,
+                extracted_at=None,
+                extract=None,
+            )
+            self._documents[document_id] = artifact
+            self._temp_path_index[temp_path] = document_id
+            self._document_temp_paths[document_id] = temp_path
+        self._persist_document_artifact(artifact)
+        return artifact.model_copy(deep=True)
+
+    def resolve_document_for_temp_path(self, temp_path: str) -> DocumentArtifact | None:
+        with self._lock:
+            document_id = self._temp_path_index.get(temp_path)
+            if not document_id:
+                return None
+            artifact = self._documents.get(document_id)
+            return artifact.model_copy(deep=True) if artifact else None
+
+    def set_document_extract(
+        self,
+        document_id: str,
+        extract: DocumentExtract,
+        *,
+        document_type: str | None = None,
+    ) -> DocumentArtifact | None:
+        with self._lock:
+            artifact = self._documents.get(document_id)
+            if artifact is None:
+                return None
+            artifact.extract = extract
+            artifact.extracted_at = _utcnow()
+            if document_type:
+                artifact.document_type = document_type
+            updated = artifact.model_copy(deep=True)
+        self._persist_document_artifact(updated)
+        with self._lock:
+            self._documents[document_id] = updated
+        return updated.model_copy(deep=True)
+
+    def get_document_temp_path(self, document_id: str) -> str | None:
+        with self._lock:
+            return self._document_temp_paths.get(document_id)
+
+    def discard_temp_path(self, temp_path: str) -> None:
+        with self._lock:
+            document_id = self._temp_path_index.pop(temp_path, None)
+            if document_id:
+                self._document_temp_paths.pop(document_id, None)
+
+    def push_ephemeral_message(self, role: str, content: Any) -> str:
+        ephemeral_id = uuid.uuid4().hex
+        item: dict[str, Any] = {
+            "role": role,
+            "content": content,
+        }
+        item_typed = cast(TResponseInputItem, item)
+        with self._lock:
+            self._items.append(item_typed)
+            self._ephemeral_items[ephemeral_id] = item_typed
+        return ephemeral_id
+
+    def pop_ephemeral_message(self, ephemeral_id: str) -> None:
+        if not ephemeral_id:
+            return
+        with self._lock:
+            item = self._ephemeral_items.pop(ephemeral_id, None)
+            if item is None:
+                return
+            try:
+                self._items.remove(item)
+            except ValueError:
+                pass
+
+    # ------------------------------------------------------------------
     # Timeline watchers
     # ------------------------------------------------------------------
 
@@ -489,6 +699,28 @@ class PersistentSession(SessionABC):
                 )
             db.commit()
 
+    def _persist_document_artifact(self, artifact: DocumentArtifact | None) -> None:
+        with SessionLocal() as db:
+            repo = SessionRepository(db)
+            if artifact is None:
+                repo.clear_document_artifacts(self.session_id)
+            else:
+                repo.upsert_document_artifact(
+                    self.session_id,
+                    artifact.id,
+                    display_name=artifact.display_name,
+                    original_filename=artifact.original_filename,
+                    mime_type=artifact.mime_type,
+                    document_type=artifact.document_type,
+                    extract=(
+                        artifact.extract.model_dump()
+                        if artifact.extract is not None
+                        else None
+                    ),
+                    extracted_at=artifact.extracted_at,
+                )
+            db.commit()
+
     def _clear_persistence(self) -> None:
         with SessionLocal() as db:
             repo = SessionRepository(db)
@@ -497,6 +729,7 @@ class PersistentSession(SessionABC):
             repo.clear_intake(self.session_id)
             repo.delete_planning_context(self.session_id)
             repo.delete_optimization_result(self.session_id)
+            repo.clear_document_artifacts(self.session_id)
             db.commit()
 
 
@@ -508,6 +741,7 @@ _session_cache: Dict[str, _SessionEntry] = {}
 
 
 def _purge_expired_sessions(now: datetime) -> None:
+    now = _ensure_utc(now)
     ttl_minutes = settings.session_ttl_minutes
     max_entries = settings.session_max_entries
 
@@ -516,7 +750,7 @@ def _purge_expired_sessions(now: datetime) -> None:
         expired_keys = [
             key
             for key, entry in _session_cache.items()
-            if entry.last_access < expiry_threshold
+            if _ensure_and_update_last_access(entry) < expiry_threshold
         ]
         for key in expired_keys:
             logger.debug("Evicting expired session: %s", key)
@@ -526,7 +760,8 @@ def _purge_expired_sessions(now: datetime) -> None:
         surplus = len(_session_cache) - max_entries
         if surplus > 0:
             ordered = sorted(
-                _session_cache.items(), key=lambda item: item[1].last_access
+                _session_cache.items(),
+                key=lambda item: _ensure_and_update_last_access(item[1]),
             )
             for key, _ in ordered[:surplus]:
                 logger.debug("Evicting LRU session to maintain capacity: %s", key)

@@ -86,7 +86,7 @@ async def _get_jwks(jwks_url: str) -> dict[str, Any]:
     return jwks
 
 
-async def _build_key(token: str, jwks_url: str) -> dict[str, Any]:
+async def _build_key(token: str, jwks_url: str) -> tuple[dict[str, Any], Optional[str]]:
     jwks = await _get_jwks(jwks_url)
     header = jwt.get_unverified_header(token)
     kid = header.get("kid")
@@ -95,16 +95,24 @@ async def _build_key(token: str, jwks_url: str) -> dict[str, Any]:
     keys = jwks.get("keys", [])
     for key in keys:
         if key.get("kid") == kid:
-            return key
+            return key, header.get("alg") or key.get("alg")
     raise JWTError("Supabase signing key not found for token")
 
 
 async def _decode_token(token: str) -> Dict[str, Any]:
     jwks_url, audience, issuer, _ = _validate_config()
-    key = await _build_key(token, jwks_url)
+    key, algorithm = await _build_key(token, jwks_url)
+    allowed_algorithms: list[str] = []
+    if isinstance(algorithm, str):
+        allowed_algorithms = [algorithm]
+    elif isinstance(key, dict) and isinstance(key.get("alg"), str):
+        allowed_algorithms = [key["alg"]]
+    else:
+        allowed_algorithms = ["RS256"]
     return jwt.decode(
         token,
         key,
+        algorithms=allowed_algorithms,
         audience=audience,
         issuer=issuer,
     )

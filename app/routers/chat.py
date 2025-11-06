@@ -19,7 +19,11 @@ from ..security import AuthenticatedUser, get_current_user
 from ..services.session_manager import get_or_create_session
 from ..services.chat_payload import build_optimization_payload
 from ..services.session_snapshot import gather_session_state
-from ..services.upload_manager import cleanup_temp_paths, process_uploads
+from ..services.upload_manager import (
+    cleanup_temp_paths,
+    process_uploads,
+    UploadedDocument,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -59,10 +63,31 @@ async def chat(
             logger.info("Assigned new session_id: %s", thread_id)
 
         upload_result = process_uploads(files)
-        if upload_result.message_prefix:
-            message = upload_result.message_prefix + message
+        uploaded_documents: list[UploadedDocument] = upload_result.documents
+        for document in uploaded_documents:
+            session.register_document_stub(
+                document.document_id,
+                display_name=document.display_name,
+                original_filename=document.original_filename,
+                mime_type=document.mime_type,
+                document_type=document.document_type,
+                temp_path=document.temp_path,
+            )
         files_processed = upload_result.files_processed
         temp_paths = upload_result.temp_paths
+        attachment_hint_id: Optional[str] = None
+        if uploaded_documents:
+            summary_lines = [
+                f"- id {doc.document_id}: {doc.display_name} ({doc.document_type})"
+                for doc in uploaded_documents
+            ]
+            attachment_hint = (
+                "Uploaded documents available for analysis:\n"
+                + "\n".join(summary_lines)
+            )
+            attachment_hint_id = session.push_ephemeral_message(
+                "system", attachment_hint
+            )
 
         agent = getattr(request.app.state, "orchestrator", None)
         if agent is None:
@@ -78,6 +103,10 @@ async def chat(
                 max_turns=settings.agent_max_turns,
             )
         finally:
+            if attachment_hint_id:
+                session.pop_ephemeral_message(attachment_hint_id)
+            for temp_path in temp_paths:
+                session.discard_temp_path(temp_path)
             cleanup_temp_paths(temp_paths)
 
         (
@@ -87,6 +116,7 @@ async def chat(
             optimization_result,
             optimization_state,
         ) = gather_session_state(session)
+        document_summaries = session.document_summaries()
 
         (
             optimization_candidates,
@@ -111,6 +141,7 @@ async def chat(
             engine_recommended_index=engine_recommended_index,
             advisor_recommended_index=advisor_recommended_index,
             term_sweep=term_sweep_rows,
+            documents=document_summaries or None,
         )
 
     except HTTPException:

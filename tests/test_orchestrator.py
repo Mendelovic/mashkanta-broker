@@ -12,6 +12,7 @@ def test_orchestrator_instantiates_and_registers_tools():
         "compute_planning_context",
         "run_mix_optimization",
         "analyze_document",
+        "list_uploaded_documents",
         "evaluate_mortgage_eligibility",
         "record_timeline_event",
     }

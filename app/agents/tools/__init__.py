@@ -1,6 +1,7 @@
 """Exports for agent tools."""
 
 from .document_tool import analyze_document
+from .document_registry_tool import list_uploaded_documents
 from .timeline_tool import record_timeline_event
 from .mortgage_eligibility_tool import evaluate_mortgage_eligibility
 from .intake_tool import submit_intake_record
@@ -10,6 +11,7 @@ from .optimization_tool import run_mix_optimization
 
 __all__ = [
     "analyze_document",
+    "list_uploaded_documents",
     "record_timeline_event",
     "evaluate_mortgage_eligibility",
     "submit_intake_record",

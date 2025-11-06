@@ -9,6 +9,13 @@ from .timeline import (
 )
 from .intake import IntakeRevision, IntakeStore
 from .session import SessionMessageModel, SessionSummary, SessionDetail
+from .documents import (
+    DocumentArtifact,
+    DocumentArtifactSummary,
+    DocumentExtract,
+    DocumentKeyValue,
+    DocumentTable,
+)
 
 __all__ = [
     "ChatRunContext",
@@ -23,4 +30,9 @@ __all__ = [
     "SessionMessageModel",
     "SessionSummary",
     "SessionDetail",
+    "DocumentArtifact",
+    "DocumentArtifactSummary",
+    "DocumentExtract",
+    "DocumentKeyValue",
+    "DocumentTable",
 ]
