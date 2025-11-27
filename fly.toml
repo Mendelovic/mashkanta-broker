@@ -16,6 +16,9 @@ primary_region = 'fra'
   min_machines_running = 0
   processes = ['app']
 
+[env]
+  ENVIRONMENT = "prod"
+
 [[vm]]
   memory = '1gb'
   cpu_kind = 'shared'
